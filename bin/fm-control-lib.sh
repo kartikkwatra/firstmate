@@ -334,19 +334,17 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 }
 
 # Which named keys a backend adapter can deliver. Every session provider
-# normalizes Enter, Ctrl+C, and the Ctrl+U composer clear; Orca's terminal API
-# exposes only an interrupt and an Enter, so it can deliver neither Escape nor
-# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key). T3 has no composer
+# normalizes Enter, Ctrl+C, and the Ctrl+U composer clear. Orca names only an
+# interrupt and an Enter of its own, but its `terminal send --text` writes
+# bytes to the pty verbatim, so Escape and Ctrl+U ride their control bytes
+# (bin/backends/orca.sh's fm_backend_orca_send_key). T3 has no composer
 # to clear, so Ctrl+U has nothing to do there; Escape and Ctrl+C are both a
 # turn interrupt (bin/backends/t3code.sh's fm_backend_t3code_send_key).
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
-    tmux|herdr|zellij|cmux|paseo|rex|tern|hc)
+    tmux|herdr|zellij|cmux|paseo|rex|tern|hc|orca)
       case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
-      ;;
-    orca)
-      case "$key" in Enter|C-c) return 0 ;; esac
       ;;
     t3code)
       case "$key" in Escape|Enter|C-c) return 0 ;; esac

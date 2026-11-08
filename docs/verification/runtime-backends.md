@@ -2393,6 +2393,40 @@ git branch (project, after)           -> main only; orca worktree list no longer
 The portable regressions are `test_worktree_create_adopts_orcas_own_first_terminal`, `test_json_get_accepts_documented_startup_terminal_shapes`, `test_spawn_refuses_orca_ship_branch_that_already_exists`, and `test_spawn_releases_orca_worktree_left_off_the_ship_branch` in `tests/fm-backend-orca.test.sh`.
 Refresh this harness-dependent proof against a running Orca app after an Orca upgrade with the same guard command.
 
+### Orca control-byte key delivery, live
+
+Taken 2026-11-08 on Linux against the `orca` CLI and app 1.4.253.
+
+Orca names only an interrupt and an Enter, but `terminal send --text` writes its payload to the pty verbatim, so a key with a control-byte encoding is deliverable.
+Probed by running `cat -v` in a scratch worktree's terminal, which renders control characters printably:
+
+```text
+send --text $'\033'   ->  "accepted": true, "bytesWritten": 1
+send --text $'\025'   ->  "accepted": true, "bytesWritten": 1
+BEGIN, 0x1b, END Enter          ->  tail: "BEGIN^[END"
+KEEP, 0x15, AFTERKILL Enter     ->  tail: "AFTERKILL" (the line-kill erased KEEP)
+```
+
+`fm_backend_orca_send_key` therefore maps Escape to 0x1b and the Ctrl+U composer clear to 0x15, and keeps Orca's own `--interrupt` for C-c because that is the signal-bearing path.
+
+End to end, through a real `bin/fm-spawn.sh --backend orca` task in an isolated home whose recorded harness was set to `omp` and whose terminal ran `stty raw -echo; cat -v`:
+
+```text
+$ bin/fm-control.sh <id> interrupt            (this branch)
+interrupt-delivered <id> harness=omp backend=orca verified=endpoint cancel=unconfirmed
+terminal tail -> "^["
+$ bin/fm-control.sh <id> interrupt            (main before this change)
+error: harness omp interrupts with Escape, which the orca backend cannot deliver; refusing to send a different key
+fm_backend_orca_send_key <terminal> C-u -> terminal tail "^[^U"
+```
+
+The portable regression is `test_send_key_escape_and_composer_clear_ride_control_bytes` in `tests/fm-backend-orca.test.sh`, which pins both control bytes and asserts neither key is substituted with `--interrupt`.
+Refresh this harness-dependent proof against a running Orca app after an Orca upgrade:
+
+```sh
+bin/fm-control.sh <orca-backed-task> interrupt
+```
+
 ### Orca environment source
 
 The environment source was verified on 2026-10-14 on macOS 15.6.1 with tmux 3.6a, Bash 5.3.20, Bash 3.2.57, and zsh 5.9.

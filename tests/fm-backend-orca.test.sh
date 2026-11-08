@@ -359,16 +359,26 @@ test_send_key_refuses_unknown_key() {
   pass "fm_backend_orca_send_key: refuses unsupported keys loudly"
 }
 
-test_send_key_refuses_escape_until_supported() {
-  local out status
-  orca_case send-key-escape
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_send_key term-123 Escape' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "send_key should refuse Escape until Orca exposes a real Escape primitive"
-  assert_contains "$out" "unsupported Orca key 'Escape'" "send_key did not name Escape as unsupported"
-  [ ! -s "$LOG" ] || fail "unsupported Escape should not call orca terminal send"
-  pass "fm_backend_orca_send_key: refuses Escape instead of mapping it to interrupt"
+# Escape and the Ctrl+U composer clear have no named Orca flag, so they are
+# only deliverable as the control bytes `terminal send --text` writes to the
+# pty verbatim. Assert the exact byte, and assert it is NOT sent as Orca's own
+# --interrupt: substituting the interrupt for a harness that binds Escape sends
+# a different signal than the caller asked for.
+test_send_key_escape_and_composer_clear_ride_control_bytes() {
+  local log
+  orca_case send-key-bytes
+  PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_send_key term-123 Escape; fm_backend_orca_send_key term-123 C-u' "$ROOT"
+  expect_code 0 $? "send_key Escape and C-u should succeed on orca"
+  log=$(cat "$LOG")
+  assert_contains "$log" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-123'$'\x1f''--text'$'\x1f\033\x1f''--json' \
+    "send_key Escape did not send the 0x1b control byte as text"
+  assert_contains "$log" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-123'$'\x1f''--text'$'\x1f\025\x1f''--json' \
+    "send_key C-u did not send the 0x15 control byte as text"
+  case "$log" in
+    *'--interrupt'*) fail "Escape and C-u must not be substituted with Orca's --interrupt" ;;
+  esac
+  pass "fm_backend_orca_send_key: Escape and C-u ride their control bytes, never a substituted interrupt"
 }
 
 test_kill_is_best_effort_close() {
@@ -1509,7 +1519,7 @@ test_send_text_submit_reports_send_failed
 test_send_helpers_reject_orca_error_json
 test_send_key_enter_and_interrupt
 test_send_key_refuses_unknown_key
-test_send_key_refuses_escape_until_supported
+test_send_key_escape_and_composer_clear_ride_control_bytes
 test_kill_is_best_effort_close
 test_kill_refuses_when_the_orca_cli_is_absent
 test_remove_worktree_refuses_empty_id

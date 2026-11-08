@@ -13,8 +13,9 @@
 # parent waiting on a reply to nothing.
 # Special keys instead of text: fm-send.sh <target> --key Enter
 # Key support is backend-specific: tmux/herdr support Escape, Enter, and C-c;
-# Orca supports Enter and C-c only; T3 Code maps Escape and C-c to a native
-# turn interrupt and treats Enter as a no-op.
+# Orca supports Escape, Enter, C-c, and C-u, carrying Escape and C-u as their
+# control bytes; T3 Code maps Escape and C-c to a native turn interrupt and
+# treats Enter as a no-op.
 #
 # Two data planes:
 #

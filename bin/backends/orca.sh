@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bin/backends/orca.sh - the Orca terminal session-provider adapter.
 #
-# Orca owns both the task worktree and the terminal endpoint. Escape key support
-# remains unsupported until Orca exposes a terminal-send primitive for it.
+# Orca owns both the task worktree and the terminal endpoint. Escape and the
+# Ctrl+U composer clear ride their control bytes (fm_backend_orca_send_key).
 #
 # Target string shape: the Orca terminal id accepted by `orca terminal ...`.
 
@@ -354,6 +354,15 @@ fm_backend_orca_composer_state() {  # <terminal-id> [expected-label] -> empty|pe
   printf '%s' "$verdict"
 }
 
+# fm_backend_orca_send_key: Orca names only two inputs of its own - an
+# interrupt and an Enter - but `terminal send --text` writes its payload to the
+# pty verbatim, so a key with a control-byte encoding is deliverable as that
+# byte. Escape (0x1b) and the Ctrl+U composer clear (0x15) go that way, which is
+# what lets an Escape-interrupt harness be interrupted in place here
+# (docs/verification/runtime-backends.md "Orca control-byte key delivery").
+# C-c keeps Orca's own --interrupt rather than a raw 0x03, because the API's
+# interrupt is the signal-bearing path and a raw byte would only reach a
+# program reading raw mode.
 fm_backend_orca_send_key() {  # <terminal-id> <key>
   local terminal=$1 key=$2
   fm_backend_orca_tool_check || return 1
@@ -363,6 +372,12 @@ fm_backend_orca_send_key() {  # <terminal-id> <key>
       ;;
     Enter|enter)
       fm_backend_orca_run_json orca terminal send --terminal "$terminal" --text "" --enter --json
+      ;;
+    Escape|escape)
+      fm_backend_orca_run_json orca terminal send --terminal "$terminal" --text "$(printf '\033')" --json
+      ;;
+    C-u|ctrl+u|Ctrl-u|Ctrl-U)
+      fm_backend_orca_run_json orca terminal send --terminal "$terminal" --text "$(printf '\025')" --json
       ;;
     *)
       echo "error: unsupported Orca key '$key'" >&2
