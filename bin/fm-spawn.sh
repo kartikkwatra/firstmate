@@ -5400,7 +5400,10 @@ EOF
     ;;
   orca)
     set +e
-    ORCA_WT_RAW=$(fm_backend_orca_worktree_create "$PROJ_ABS" "$W")
+    # A ship's worktree arrives on its recorded ship branch, so the worker uses
+    # the one branch Orca creates rather than adding a second beside it
+    # (bin/backends/orca.sh owns why). A scout records no branch and keeps Orca's.
+    ORCA_WT_RAW=$(fm_backend_orca_worktree_create "$PROJ_ABS" "$W" "${BRANCH:-}")
     ORCA_WT_STATUS=$?
     set -e
     if [ "$ORCA_WT_STATUS" -ne 0 ]; then
@@ -5418,6 +5421,13 @@ EOF
       exit 1
     fi
     validate_spawn_worktree "orca worktree create" "$W"
+    if [ -n "${BRANCH:-}" ]; then
+      ORCA_WT_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+      if [ "$ORCA_WT_BRANCH" != "$BRANCH" ]; then
+        echo "error: orca worktree create left $W on '${ORCA_WT_BRANCH:-a detached HEAD}', not the ship branch $BRANCH" >&2
+        exit 1
+      fi
+    fi
     # The agent runs in the terminal Orca opened with the worktree, so a task
     # shows one tab rather than an idle shell beside the working one. Creating
     # one stays the fallback for a runtime that returns no adoptable handle at

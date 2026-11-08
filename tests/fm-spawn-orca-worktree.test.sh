@@ -55,14 +55,18 @@ case "$1 $2" in
     ;;
   "worktree create")
     name=
+    branch=
     prev=
     for a in "$@"; do
       [ "$prev" = --name ] && name=$a
+      [ "$prev" = --branch ] && branch=$a
       prev=$a
     done
+    # Like Orca, use the requested branch, or name one after the worktree.
+    [ -n "$branch" ] || branch="orca-$name"
     wt="$DIR/orca-worktrees/$name"
     mkdir -p "$DIR/orca-worktrees"
-    git -C "$DIR/project" worktree add --quiet -b "orca-$name" "$wt" >&2 || exit 1
+    git -C "$DIR/project" worktree add --quiet -b "$branch" "$wt" >&2 || exit 1
     printf '{"ok":true,"result":{"worktree":{"id":"wt-%s","path":"%s"}}}\n' "$name" "$wt"
     exit 0
     ;;

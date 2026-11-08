@@ -203,10 +203,29 @@ fm_backend_orca_worktree_terminal_adopt() {  # <worktree-id>
   printf '%s' "$out" | fm_backend_orca_json_get first-terminal-handle
 }
 
-fm_backend_orca_worktree_create() {  # <project-path> <name>
-  local project=$1 name=$2 repo_id out wt_id wt_path terminal
+# fm_backend_orca_worktree_create <project-path> <name> [branch]
+#
+# Orca checks every worktree it creates out on a branch of its own and offers no
+# way to skip that branch. Without [branch] Orca names it from its configured
+# prefix and <name>, which suits a scout: cleanup deletes the branch checked out
+# in the worktree. A ship passes its recorded ship branch so Orca's branch IS the
+# task branch; otherwise the worker would create that branch beside Orca's, and
+# Orca's would be left behind in the project on every completed task.
+# Orca checks out an existing branch of that name rather than refusing, so an
+# existing [branch] is refused here before any Orca mutation: adopting a stale
+# branch would start the task on someone else's commits.
+fm_backend_orca_worktree_create() {  # <project-path> <name> [branch]
+  local project=$1 name=$2 branch=${3:-} repo_id out wt_id wt_path terminal
+  local -a branch_args=()
+  if [ -n "$branch" ]; then
+    if git -C "$project" show-ref --verify --quiet "refs/heads/$branch"; then
+      echo "error: branch $branch already exists in $project; refusing to start task $name on it" >&2
+      return 1
+    fi
+    branch_args=(--branch "$branch")
+  fi
   repo_id=$(fm_backend_orca_repo_ensure "$project") || return 1
-  out=$(orca worktree create --repo "id:$repo_id" --name "$name" --no-parent --setup skip --json) || return 1
+  out=$(orca worktree create --repo "id:$repo_id" --name "$name" ${branch_args[@]+"${branch_args[@]}"} --no-parent --setup skip --json) || return 1
   wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id) || {
     echo "error: orca worktree create did not return a worktree id for $name" >&2
     return 1

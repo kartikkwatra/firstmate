@@ -32,6 +32,9 @@ When scoped worker credentials live in a tmux session, configure the [Orca envir
 ## Task shape and metadata
 
 Each task has one Orca-managed git worktree and one Orca terminal - the terminal Orca itself opens with the worktree, which the agent then runs in.
+Orca checks every worktree it creates out on a branch of its own, so a ship asks Orca for its recorded ship branch (`branch=` in task meta, `fm/<id>` by default) and the worker keeps that branch instead of creating a second one beside it.
+A ship branch that already exists in the project is refused before Orca creates anything, because Orca would check the old branch out rather than refuse, and a worktree Orca leaves on any other branch is released before launch.
+A scout keeps the branch Orca names after its worktree, which cleanup deletes with the worktree.
 `fm-spawn.sh` does not call Treehouse for Orca tasks.
 The normal isolation and unlanded-work refusal rules still apply.
 
@@ -41,6 +44,7 @@ window=fm-<id>
 terminal=<orca terminal handle>
 orca_worktree_id=<orca repo id>::<absolute worktree path>
 worktree=<absolute Orca worktree path>
+branch=<ship branch Orca checked out; ships only>
 ```
 
 `window=` remains the caller-facing Firstmate alias.
@@ -80,6 +84,7 @@ Reinstall the CLI and rerun; [`verification/runtime-backends.md`](verification/r
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.
 - Terminal handles are accepted only from Orca's own documented fields and from the entries of `orca terminal list`; speculative response shapes are rejected.
 - Orca has no repository-unregistration command, so a repository registered for a task stays in the Orca app's list.
+- A scout promoted to a ship creates its ship branch beside the branch Orca named for the scout's worktree, and cleanup deletes only the checked-out ship branch.
 - Orca's worktree shape is unverified against the spawn-time Claude workspace-trust check in `bin/fm-claude-trust.sh`, which refuses any path that is not a linked git worktree sharing the project's git common dir, so a claude spawn on Orca fails loudly at that check rather than launching if Orca clones instead of linking.
 
 ## Regression entry points

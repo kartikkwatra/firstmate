@@ -2350,7 +2350,7 @@ tests/fm-bootstrap.test.sh
 
 The fake-Orca suite covers readiness, registration, create response parsing, metadata routing, popup-safe submit, and path-matched release refusal.
 
-### Orca's own terminal, live
+### Orca's own terminal and branch, live
 
 Taken 2026-11-08 on Linux against the `orca` CLI and app 1.4.253, in a scratch repository under `/tmp`.
 
@@ -2364,15 +2364,33 @@ orca terminal list --worktree id:<worktree-id> --json
   result.terminals[0].handle = term_e810db80-1e6e-4652-a74f-54c947d8e244
 ```
 
-The live guard drives the adapter's own create path and asserts that it returns exactly that single listed handle:
+The same plain create reports `result.worktree.branch = refs/heads/<name>` in the scratch repository: Orca checks every new worktree out on a branch it names after the worktree, under any branch prefix configured in the Orca app.
+Passing `--branch fm/<name>` instead reports `result.worktree.branch = refs/heads/fm/<name>`, and `git branch --show-current` in the worktree prints `fm/<name>`.
+Passing `--branch` with the name of an existing, unchecked-out branch checks that branch out rather than refusing or suffixing it.
+`orca worktree rm --worktree id:<id> --force --json` returns `result.removed = true` and leaves the worktree's branch in the repository, even with no commits on it.
+
+The live guard drives the adapter's own create path with a ship branch, and asserts adoption of that single listed handle, the checked-out branch, and the pre-create refusal of an existing branch:
 
 ```text
 $ FM_LIVE_ORCA=1 tests/fm-orca-terminal-adopt-live-e2e.test.sh
 ok - orca worktree create: its own single terminal is adopted, never duplicated
-ok - orca worktree rm: the guard's own worktree is released
+ok - orca worktree create --branch: the worktree arrives on the ship branch itself
+ok - orca worktree create: an existing ship branch is refused before Orca is asked
+ok - orca worktree rm: the guard's own worktree and ship branch are released
 ```
 
-The portable regressions are `test_worktree_create_adopts_orcas_own_first_terminal` and `test_json_get_accepts_documented_startup_terminal_shapes` in `tests/fm-backend-orca.test.sh`.
+A full task cycle through the real `bin/fm-spawn.sh --backend orca` and `bin/fm-teardown.sh`, in an isolated home with a scratch project and an idle shell-script harness:
+
+```text
+bin/fm-spawn.sh <id> <project> --mode local-only --yolo off --backend orca --harness "/bin/sh idle.sh"
+  state/<id>.meta                     -> branch=fm/<id>, terminal=term_94bdf8f6-...
+orca terminal list --worktree id:...  -> totalCount: 1, handle term_94bdf8f6-..., running the harness
+git branch (worktree, project)        -> fm/<id> checked out; fm/<id> and main only
+bin/fm-teardown.sh <id>               -> exit 0, "teardown <id> complete"
+git branch (project, after)           -> main only; orca worktree list no longer names the task
+```
+
+The portable regressions are `test_worktree_create_adopts_orcas_own_first_terminal`, `test_json_get_accepts_documented_startup_terminal_shapes`, `test_spawn_refuses_orca_ship_branch_that_already_exists`, and `test_spawn_releases_orca_worktree_left_off_the_ship_branch` in `tests/fm-backend-orca.test.sh`.
 Refresh this harness-dependent proof against a running Orca app after an Orca upgrade with the same guard command.
 
 ### Orca environment source
