@@ -31,7 +31,7 @@ When scoped worker credentials live in a tmux session, configure the [Orca envir
 
 ## Task shape and metadata
 
-Each task has one Orca-managed git worktree and one Orca terminal.
+Each task has one Orca-managed git worktree and one Orca terminal - the terminal Orca itself opens with the worktree, which the agent then runs in.
 `fm-spawn.sh` does not call Treehouse for Orca tasks.
 The normal isolation and unlanded-work refusal rules still apply.
 
@@ -49,7 +49,8 @@ Orca returns `orca_worktree_id=` as that composite of the Orca repo id and the w
 
 ## Current lifecycle and safety
 
-Spawn registers the repository, creates an independent worktree, reuses only the verified `result.terminal.handle` returned by Orca or creates a terminal explicitly, installs harness hooks, records metadata, and launches the selected harness.
+Spawn registers the repository, creates an independent worktree, adopts the terminal Orca opened with it, installs harness hooks, records metadata, and launches the selected harness.
+A plain `orca worktree create --json` returns no handle for that terminal, so the adapter recovers it by listing the new worktree's terminals; creating one is the fallback for a runtime that offers none, and a task therefore shows one terminal rather than an idle shell beside the working one.
 Exact command flags and response parsing are owned by `bin/backends/orca.sh` and script help.
 
 `fm-peek.sh` reads with `orca terminal read`.
@@ -77,7 +78,8 @@ Reinstall the CLI and rerun; [`verification/runtime-backends.md`](verification/r
 - Secondmate spawns are unsupported.
 - Escape is unsupported.
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.
-- Only the verified terminal-handle and worktree result fields are accepted; speculative response shapes are rejected.
+- Terminal handles are accepted only from Orca's own documented fields and from the entries of `orca terminal list`; speculative response shapes are rejected.
+- Orca has no repository-unregistration command, so a repository registered for a task stays in the Orca app's list.
 - Orca's worktree shape is unverified against the spawn-time Claude workspace-trust check in `bin/fm-claude-trust.sh`, which refuses any path that is not a linked git worktree sharing the project's git common dir, so a claude spawn on Orca fails loudly at that check rather than launching if Orca clones instead of linking.
 
 ## Regression entry points
@@ -88,6 +90,7 @@ tests/fm-spawn-orca-worktree.test.sh
 tests/fm-backend.test.sh
 tests/fm-bootstrap.test.sh
 tests/fm-teardown-endpoint-safety.test.sh
+FM_LIVE_ORCA=1 tests/fm-orca-terminal-adopt-live-e2e.test.sh
 ```
 
 [`verification/runtime-backends.md`](verification/runtime-backends.md#orca) records the real readiness and response-shape smoke.

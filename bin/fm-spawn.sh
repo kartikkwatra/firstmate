@@ -5418,6 +5418,10 @@ EOF
       exit 1
     fi
     validate_spawn_worktree "orca worktree create" "$W"
+    # The agent runs in the terminal Orca opened with the worktree, so a task
+    # shows one tab rather than an idle shell beside the working one. Creating
+    # one stays the fallback for a runtime that returns no adoptable handle at
+    # all (bin/backends/orca.sh owns both shapes and the discovery).
     if [ -z "$ORCA_TERMINAL" ]; then
       ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
     fi

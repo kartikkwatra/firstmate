@@ -96,11 +96,13 @@ process.stdout.write(assignments.join(" "), "latin1");
 JS
 }
 
-fm_backend_orca_json_get() {  # <field> ; fields: worktree-id worktree-path terminal-handle worktree-terminal-handle repo-id
+fm_backend_orca_json_get() {  # <field> ; fields: worktree-id worktree-path terminal-handle worktree-terminal-handle first-terminal-handle repo-id
   # Terminal handles are accepted only from verified terminal result shapes:
-  # result.terminal or a root terminal object with .handle. Undocumented
-  # result.id and result.worktree.terminal shapes are ignored until a real Orca
-  # smoke run proves them.
+  # result.terminal, result.startupTerminal, result.agentTerminalHandle (the two
+  # shapes `orca worktree create --help` has documented for the terminal it makes
+  # with the worktree), a root terminal object with .handle, and the entries of a
+  # result.terminals list. Undocumented result.id and result.worktree.terminal
+  # shapes are ignored until a real Orca smoke run proves them.
   local field=$1
   node -e '
 const fs = require("fs");
@@ -127,7 +129,14 @@ let v = "";
 if (field === "worktree-id") v = wt.id || wt.worktreeId || r.worktreeId || "";
 if (field === "worktree-path") v = wt.path || (wt.git && wt.git.path) || r.path || "";
 if (field === "terminal-handle") v = handle(explicitTerm || r) || "";
-if (field === "worktree-terminal-handle") v = handle(explicitTerm) || "";
+if (field === "worktree-terminal-handle") v = handle(explicitTerm) || handle(r.startupTerminal) || scalar(r.agentTerminalHandle) || "";
+if (field === "first-terminal-handle") {
+  const list = Array.isArray(r.terminals) ? r.terminals : [];
+  for (const entry of list) {
+    const h = handle(entry);
+    if (h) { v = h; break; }
+  }
+}
 if (field === "repo-id") v = repo.id || repo.repoId || r.repoId || "";
 if (!v) process.exit(1);
 process.stdout.write(String(v));
@@ -176,6 +185,24 @@ fm_backend_orca_repo_ensure() {  # <project-path>
   printf '%s' "$repo_id"
 }
 
+# fm_backend_orca_worktree_terminal_adopt <worktree-id>: the handle of the
+# terminal Orca itself opened in a worktree it just created.
+#
+# `orca worktree create` always opens a first terminal in the new worktree and
+# has no flag to suppress it, but a plain create (no --agent) returns no handle
+# for it in its JSON. Left undiscovered, the handle is lost and the caller opens
+# a SECOND terminal beside an idle shell nobody uses. Listing the worktree's
+# terminals recovers it: a worktree created moments ago holds exactly Orca's own
+# terminal, so its first entry is that terminal.
+fm_backend_orca_worktree_terminal_adopt() {  # <worktree-id>
+  local worktree_id=${1:-} out
+  [ -n "$worktree_id" ] || return 1
+  fm_backend_orca_tool_check || return 1
+  out=$(orca terminal list --worktree "id:$worktree_id" --json 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out" | fm_backend_orca_json_get first-terminal-handle
+}
+
 fm_backend_orca_worktree_create() {  # <project-path> <name>
   local project=$1 name=$2 repo_id out wt_id wt_path terminal
   repo_id=$(fm_backend_orca_repo_ensure "$project") || return 1
@@ -198,6 +225,13 @@ fm_backend_orca_worktree_create() {  # <project-path> <name>
     fi
     return 2
   }
+  # Adopt Orca's own terminal rather than adding a second one. Discovery runs
+  # only here, after the worktree is known good: the path-failure branch above
+  # closes whatever handle the create response carried and then removes the
+  # whole worktree, which takes its terminals with it.
+  if [ -z "$terminal" ]; then
+    terminal=$(fm_backend_orca_worktree_terminal_adopt "$wt_id" 2>/dev/null || true)
+  fi
   printf '%s\t%s' "$wt_id" "$wt_path"
   [ -z "$terminal" ] || printf '\t%s' "$terminal"
 }

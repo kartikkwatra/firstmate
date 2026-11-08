@@ -2350,6 +2350,31 @@ tests/fm-bootstrap.test.sh
 
 The fake-Orca suite covers readiness, registration, create response parsing, metadata routing, popup-safe submit, and path-matched release refusal.
 
+### Orca's own terminal, live
+
+Taken 2026-11-08 on Linux against the `orca` CLI and app 1.4.253, in a scratch repository under `/tmp`.
+
+A plain `orca worktree create --repo id:<id> --name <name> --no-parent --setup skip --json` returns `result` keys `worktree,lineage,workspaceLineage,warnings,catalogVersion`: no `terminal`, `startupTerminal`, or `agentTerminalHandle`.
+`orca worktree create --help` documents a terminal handle in the response only for the `--agent` form, which Firstmate does not use, and offers no option to skip the first terminal.
+The terminal still exists, so the handle is recovered by listing the new worktree:
+
+```text
+orca terminal list --worktree id:<worktree-id> --json
+  result.totalCount = 1
+  result.terminals[0].handle = term_e810db80-1e6e-4652-a74f-54c947d8e244
+```
+
+The live guard drives the adapter's own create path and asserts that it returns exactly that single listed handle:
+
+```text
+$ FM_LIVE_ORCA=1 tests/fm-orca-terminal-adopt-live-e2e.test.sh
+ok - orca worktree create: its own single terminal is adopted, never duplicated
+ok - orca worktree rm: the guard's own worktree is released
+```
+
+The portable regressions are `test_worktree_create_adopts_orcas_own_first_terminal` and `test_json_get_accepts_documented_startup_terminal_shapes` in `tests/fm-backend-orca.test.sh`.
+Refresh this harness-dependent proof against a running Orca app after an Orca upgrade with the same guard command.
+
 ### Orca environment source
 
 The environment source was verified on 2026-10-14 on macOS 15.6.1 with tmux 3.6a, Bash 5.3.20, Bash 3.2.57, and zsh 5.9.
