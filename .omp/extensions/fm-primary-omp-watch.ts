@@ -57,6 +57,13 @@
 // consumes at the user message_start carrying the exact wake text; either
 // event finishes the pending record, and a still-unconsumed record rides the
 // replacement handoff.
+// Under Orca's native chat (`omp acp`), omp parks a follow-up sent while main
+// is idle until the captain types, so there the wake is instead handed to Orca
+// as a queued user message (.pi/extensions/lib/fm-orca-chat-send.ts owns that
+// contract): Orca starts the turn itself, and its exact text is consumed at
+// before_agent_start like any idle follow-up. Delivered means Orca accepted it.
+// If Orca refuses or cannot be reached, the wake falls back to the follow-up
+// with the adapter's error appended, so the failure is visible once read.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -69,6 +76,7 @@ import { Type } from "typebox";
 // resolves bin/fm-operational-input.sh relative to its own location, which is
 // the same repository root this file lives in.
 import { encodeFirstmateOperationalInput } from "../../.pi/extensions/lib/fm-operational-input.ts";
+import { orcaChatTarget, sendToOrcaChat } from "../../.pi/extensions/lib/fm-orca-chat-send.ts";
 
 // The omp extension API surface this file uses. omp is a Pi fork and ships no
 // separately installable type package, so the contract is declared locally
@@ -559,6 +567,7 @@ process.once("exit", cleanupOnProcessExit);
 export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
   activateGeneration(generation);
+  const orcaChat = orcaChatTarget();
 
   async function sendWake(
     owner: SessionGeneration,
@@ -566,10 +575,22 @@ export default function (pi: ExtensionAPI) {
     pending?: PendingActionableClose,
   ): Promise<boolean> {
     if (!generationIsLive(owner)) return false;
-    const content = encodeFirstmateOperationalInput(
-      "watcher",
-      `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
-    );
+    const instruction = "Run bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.";
+    let content = encodeFirstmateOperationalInput("watcher", `FIRSTMATE WATCHER WAKE: ${message}\n\n${instruction}`);
+    if (orcaChat) {
+      if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
+      try {
+        await sendToOrcaChat(orcaChat, content);
+        return generationIsLive(owner);
+      } catch (error) {
+        if (pending) owner.unconsumedWakes.delete(pending.token);
+        const detail = error instanceof Error ? error.message : String(error);
+        content = encodeFirstmateOperationalInput(
+          "watcher",
+          `FIRSTMATE WATCHER WAKE: ${message}\n\nwatcher: FAILED - ${detail} This wake fell back to an omp follow-up, which an idle Orca chat holds until the captain types.\n\n${instruction}`,
+        );
+      }
+    }
     if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
     try {
       await pi.sendUserMessage(content, { deliverAs: "followUp" });

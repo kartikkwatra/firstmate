@@ -643,7 +643,7 @@ install_omp_extension_fixture() {  # <repo>
   local repo=$1
   mkdir -p "$repo/.omp/extensions" "$repo/.pi/extensions/lib" "$repo/bin" "$repo/node_modules/typebox"
   cp "$ROOT/.omp/extensions/fm-primary-turnend-guard.ts" "$ROOT/.omp/extensions/fm-primary-omp-watch.ts" "$repo/.omp/extensions/"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$repo/.pi/extensions/lib/"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$ROOT/.pi/extensions/lib/fm-orca-chat-send.ts" "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$repo/.pi/extensions/lib/"
   cp "$ROOT/bin/fm-operational-input.sh" "$ROOT/bin/fm-supervision-engine-lib.sh" "$repo/bin/"
   chmod +x "$repo/bin/fm-operational-input.sh"
   printf '{"name":"typebox","type":"module","exports":"./index.js"}\n' > "$repo/node_modules/typebox/package.json"
@@ -769,6 +769,127 @@ EOF
   expect_code 0 "$status" "omp watch extension contract: $out"
   [ -z "$out" ] || fail "omp watch extension test printed output: $out"
   pass ".omp watch extension: fm_watch_arm_omp arms once, repeats as a no-op, and delivers an actionable close as one follow-up"
+}
+
+# Under Orca's native chat (`omp acp` with Orca's chat environment) a wake is
+# handed to Orca as a queued user message over its runtime socket instead of an
+# omp follow-up, which idle ACP would park; a stale fence is retried once, an
+# unrecognized reply falls back to a follow-up that names the failure, and a
+# terminal omp in the same environment keeps the follow-up path.
+test_watch_extension_delivers_through_orca_chat() {  # <accept|stale|broken|terminal>
+  local mode=$1 repo home out status
+  repo="$TMP_ROOT/watch-orca-$mode/repo"; home="$TMP_ROOT/watch-orca-$mode/home"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state" "$home/orca"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = --handling-delivered ] && exit 0
+printf 'watcher: started pid=%s (beacon 0s) recovery-generation=gen-1\n' "$$"
+if [ ! -e "${FM_HOME:?}/state/.e2e-fired" ]; then
+  : > "$FM_HOME/state/.e2e-fired"
+  sleep 1
+  printf 'signal: omp-e2e done\n'
+  exit 0
+fi
+sleep 30
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(MODE="$mode" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_OMP_ARM_READY_TIMEOUT_MS=3000 FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 \
+    ORCA_STRUCTURED_SESSION=1 ORCA_AGENT_SESSION_ID=omp_test_chat ORCA_USER_DATA_PATH="$home/orca" \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { createServer } from "node:net";
+import { writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+const mode = process.env.MODE;
+const dataDir = process.env.ORCA_USER_DATA_PATH;
+// A unix socket path is capped near 104 bytes, so it lives in a short /tmp dir.
+const socketDir = mkdtempSync("/tmp/fm-orca-");
+const socketPath = `${socketDir}/runtime.sock`;
+const requests = [];
+function reply(n) {
+  if (mode === "broken") return { ok: true, value: { unexpected: true } };
+  if (mode === "stale" && n === 1) return { ok: false, refusal: { code: "agent_session_checkpoint_stale", currentFence: 7 } };
+  return { ok: true, fence: 7, value: { clientMessageId: "m1", submission: { dispatchState: "pending" } } };
+}
+const server = createServer((socket) => {
+  let buffered = "";
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => {
+    buffered += chunk;
+    for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
+      const request = JSON.parse(buffered.slice(0, i));
+      buffered = buffered.slice(i + 1);
+      requests.push(request);
+      socket.write(`${JSON.stringify({ _keepalive: true })}\n`);
+      socket.write(`${JSON.stringify({ id: request.id, ok: true, result: reply(requests.length) })}\n`);
+    }
+  });
+});
+await new Promise((resolveListen) => server.listen(socketPath, resolveListen));
+writeFileSync(`${dataDir}/orca-runtime.json`, JSON.stringify({ runtimeId: "rt", authToken: "tok", transports: [{ kind: "unix", endpoint: socketPath }] }));
+// omp's ACP mode runs as `omp acp`; a terminal omp does not.
+process.argv[2] = mode === "terminal" ? "--cwd" : "acp";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const handlers = new Map(); let tool = null; const sent = [];
+const pi = {
+  on(e, h) { handlers.set(e, h); },
+  registerCommand() {},
+  registerTool(t) { tool = t; },
+  sendUserMessage(m, o) { sent.push({ m, o }); return undefined; },
+};
+const mod = await import(pathToFileURL(process.env.EXT).href);
+mod.default(pi);
+await tool.execute();
+await new Promise((r) => setTimeout(r, 2500));
+const wakePrefix = "⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: omp-e2e done";
+function canonical(v) {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+}
+if (mode === "accept" || mode === "stale") {
+  const want = mode === "stale" ? 2 : 1;
+  if (requests.length !== want) throw new Error(`expected ${want} Orca requests, saw ${requests.length}; follow-ups: ${JSON.stringify(sent)}`);
+  if (sent.length !== 0) throw new Error(`an Orca-delivered wake must not also be queued as a follow-up: ${JSON.stringify(sent)}`);
+  const last = requests[want - 1];
+  const p = last.params;
+  if (last.method !== "agentSession.send" || last.authToken !== "tok") throw new Error(`wrong Orca request: ${JSON.stringify(last)}`);
+  if (p.delivery !== "queue-if-active") throw new Error("a wake must queue behind a running turn, never steer into it");
+  if (p.envelope.sessionId !== "omp_test_chat") throw new Error("the wake must target the chat this omp serves");
+  if (!/^\d{13}-[0-9a-f]{32}$/.test(p.envelope.clientOperationId)) throw new Error(`bad operation id ${p.envelope.clientOperationId}`);
+  const wantFence = mode === "stale" ? 7 : null;
+  if (p.envelope.expectedRuntimeFence !== wantFence) throw new Error(`expected fence ${wantFence}, sent ${p.envelope.expectedRuntimeFence}`);
+  if (mode === "stale" && requests[0].params.envelope.expectedRuntimeFence !== null) throw new Error("the first send must not guess a fence");
+  const digest = createHash("sha256").update(canonical({ method: "agentSession.send", sessionId: "omp_test_chat", fields: { body: p.body, delivery: p.delivery } })).digest("hex");
+  if (p.envelope.payloadFingerprint !== digest) throw new Error("payload fingerprint does not match Orca's canonical digest");
+  const text = p.body.blocks[0].text;
+  if (p.body.kind !== "message" || p.body.role !== "user" || !text.startsWith(wakePrefix)) throw new Error(`unexpected body ${JSON.stringify(p.body)}`);
+  // Orca's prompt starts the turn with that exact text, which consumes the wake.
+  await handlers.get("before_agent_start")({ type: "before_agent_start", prompt: text }, {});
+  await handlers.get("session_shutdown")({}, {});
+  if (existsSync(`${process.env.FM_HOME}/state/extensions/omp-primary-watch/session-replacement-actionable.json`)) throw new Error("a consumed Orca wake must not ride the replacement handoff");
+} else {
+  if (requests.length !== (mode === "broken" ? 1 : 0)) throw new Error(`unexpected Orca request count ${requests.length}`);
+  if (sent.length !== 1 || sent[0].o?.deliverAs !== "followUp" || !sent[0].m.startsWith(wakePrefix)) throw new Error(`expected one follow-up wake: ${JSON.stringify(sent)}`);
+  const failed = sent[0].m.includes("watcher: FAILED - Orca chat wake delivery failed: unrecognized agentSession.send reply");
+  if (mode === "broken" && !failed) throw new Error(`the fallback must name the Orca failure: ${sent[0].m}`);
+  if (mode === "terminal" && failed) throw new Error("a terminal omp must not report an Orca failure");
+}
+server.close();
+rmSync(socketDir, { recursive: true, force: true });
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp watch extension Orca chat delivery ($mode): $out"
+  [ -z "$out" ] || fail "omp watch extension Orca test ($mode) printed output: $out"
+  case "$mode" in
+    accept) pass ".omp watch extension: under Orca chat a wake is a queued Orca user message with Orca's fingerprint, not a parked follow-up" ;;
+    stale) pass ".omp watch extension: a stale Orca fence is retried once with the fence Orca reports" ;;
+    broken) pass ".omp watch extension: an unrecognized Orca reply falls back to a follow-up that names the failure" ;;
+    terminal) pass ".omp watch extension: a terminal omp with Orca's chat environment keeps the follow-up path" ;;
+  esac
 }
 
 # An opted-in home spawns the supervision host in the arm's place; its streamed
@@ -1069,6 +1190,10 @@ test_control_composer_and_model_tables
 test_ownership_proof_is_omp_keyed
 test_turnend_guard_extension_compels_one_continuation
 test_watch_extension_arms_and_delivers
+test_watch_extension_delivers_through_orca_chat accept
+test_watch_extension_delivers_through_orca_chat stale
+test_watch_extension_delivers_through_orca_chat broken
+test_watch_extension_delivers_through_orca_chat terminal
 test_watch_extension_runs_the_supervision_host
 test_watch_extension_runs_the_supervision_host quiet
 test_watch_extension_keeps_the_arm_without_the_file_or_with_off

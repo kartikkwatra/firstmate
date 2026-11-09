@@ -747,6 +747,27 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+### omp primary inside Orca's native chat
+
+Verified on 2026-11-09 with omp 18.18.3 and Orca 1.4.254 on Linux x86_64, with the `anthropic/claude-haiku-4-5` model.
+Orca runs a chat agent as `omp acp`, and omp's ACP mode refuses agent-initiated turns while no client `session/prompt` is in flight (`deferAgentInitiatedTurns` in its `acp-client-bridge.ts` and `acp-agent.ts`).
+A probe extension under a throwaway ACP stdio client showed `sendUserMessage(..., {deliverAs: "followUp"})` from an idle session start no turn and send the client nothing until the client's next prompt, while the same extension in interactive omp started the turn 16ms after sending.
+So the watch extension hands an Orca-chat wake to Orca's `agentSession.send` with `delivery: "queue-if-active"`; Orca's default delivery steers, which aborted a running turn in the same lab.
+
+```sh
+FM_OMP_ORCA_CHAT_LIVE=1 tests/fm-omp-orca-chat-live-e2e.test.sh
+```
+
+```text
+ok - Orca opened an omp chat (omp/18.18.3) in the lab and it loaded the watch extension
+ok - the adapter's message started a chat turn that armed the lab watcher, and the chat is idle
+# wake answered 42s after the status line, with the chat idle beforehand
+ok - an idle Orca chat received the watcher wake through Orca and ran it as a turn
+```
+
+The guard registers a throwaway lab clone as an Orca folder workspace, closes its chat and removes the workspace on exit, and is the re-verification for the Orca-internal contract owned by `.pi/extensions/lib/fm-orca-chat-send.ts`; rerun it after any Orca or omp update.
+`tests/fm-omp-harness.test.sh` pins the request shape, the stale-fence retry, the follow-up fallback that names an Orca failure, and the unchanged terminal path against a fake Orca socket.
+
 ### StopFailure auto-arm
 
 A Claude turn that ends on an API error (`authentication_failed`, `connection_failed`, `server_error`, and similar) runs no `Stop` phase, so before this wiring an error-ended turn left watcher continuity with no hook.
