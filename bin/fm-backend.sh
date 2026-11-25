@@ -100,8 +100,10 @@ FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
 # hc is EXPERIMENTAL and spawn-capable, session-provider-only like tmux
 # (docs/hc-backend.md).
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux paseo rex t3code tern hc"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux paseo rex t3code tern hc"
+# paseo-agent is EXPERIMENTAL and spawn-capable: each worker is a native Paseo
+# agent while Treehouse keeps the worktree (docs/paseo-agent-backend.md).
+FM_BACKEND_KNOWN="tmux herdr zellij orca cmux paseo paseo-agent rex t3code tern hc"
+FM_BACKEND_SPAWN="tmux herdr zellij orca cmux paseo paseo-agent rex t3code tern hc"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -441,15 +443,59 @@ fm_backend_explicit_name() {
   return 1
 }
 
+# fm_backend_detect_host: the host the Firstmate session ITSELF runs in, when
+# that host also hosts task workers: a Paseo agent (paseo-agent) or Orca
+# (orca). Prints the backend, sets FM_BACKEND_HOST_DETECTED and
+# FM_BACKEND_HOST_SIGNAL (paseo-agent-host, orca-chat, or orca-terminal), and
+# returns 0; returns 1 when the session is in neither. A nested multiplexer
+# marker means that multiplexer is the innermost layer, so neither host claims
+# the session. Paseo stamps PASEO_* into every descendant and a tmux server
+# started from a Paseo shell inherits them, so the marker alone never
+# qualifies: bin/backends/paseo-agent.sh's fm_backend_paseo_agent_host_agent
+# also requires this process to descend from the running daemon and the daemon
+# to read the agent back unarchived in this home. Orca deletes inherited ORCA_*
+# names before it sets its own, so its own chat (ORCA_STRUCTURED_SESSION with
+# ORCA_AGENT_SESSION_ID, the contract .pi/extensions/lib/fm-orca-chat-send.ts
+# also relies on) or terminal (ORCA_TERMINAL_HANDLE) marker names the session's
+# Orca surface. A Paseo terminal tab is not a host here: everything launched
+# from that tab inherits its markers (docs/paseo-agent-backend.md "Host-follow").
+fm_backend_detect_host() {
+  FM_BACKEND_HOST_DETECTED=""
+  FM_BACKEND_HOST_SIGNAL=""
+  if [ -n "${TMUX:-}" ] || [ "${HERDR_ENV:-}" = 1 ] || [ -n "${ZELLIJ:-}" ] \
+    || { [ "${TERM_PROGRAM:-}" = rex ] && [ -n "${REX_BLOCK:-}" ]; } \
+    || [ -n "${CMUX_WORKSPACE_ID:-}" ] || [ -n "${TERN_PANE:-}" ] || [ -n "${HC_TERMINAL_ID:-}" ]; then
+    return 1
+  fi
+  if [ -n "${PASEO_AGENT_ID:-}" ] && fm_backend_source paseo-agent >/dev/null 2>&1 \
+    && fm_backend_paseo_agent_host_agent >/dev/null 2>&1; then
+    FM_BACKEND_HOST_DETECTED=paseo-agent
+    FM_BACKEND_HOST_SIGNAL=paseo-agent-host
+  elif [ "${ORCA_STRUCTURED_SESSION:-}" = 1 ] && [ -n "${ORCA_AGENT_SESSION_ID:-}" ]; then
+    FM_BACKEND_HOST_DETECTED=orca
+    FM_BACKEND_HOST_SIGNAL=orca-chat
+  elif [ -n "${ORCA_TERMINAL_HANDLE:-}" ]; then
+    FM_BACKEND_HOST_DETECTED=orca
+    FM_BACKEND_HOST_SIGNAL=orca-terminal
+  else
+    return 1
+  fi
+  printf '%s' "$FM_BACKEND_HOST_DETECTED"
+}
+
 # fm_backend_resolve: resolve the ACTIVE backend for a NEW spawn into
 # FM_BACKEND_RESOLVED, absent an explicit per-task override. Precedence:
-# FM_BACKEND env, then config/backend (a single word on its first non-empty
-# line, mirroring config/crew-harness), then runtime auto-detection
+# FM_BACKEND env, then the session's own host (fm_backend_detect_host: a
+# Firstmate running inside a Paseo agent spawns Paseo agents, one inside Orca
+# spawns Orca workers), then config/backend (a single word on its first
+# non-empty line, mirroring config/crew-harness), then runtime auto-detection
 # (fm_backend_detect), then default tmux. A per-task `--backend` flag is
 # parsed by the caller (fm-spawn.sh) and takes precedence over this
-# resolution entirely; it is not read here. Auto-detect fires only when
-# nothing was explicitly configured, so an explicit setting always wins and
-# leaves FM_BACKEND_DETECTED/FM_BACKEND_DETECT_SIGNAL empty. Called directly
+# resolution entirely; it is not read here. A host selection that differs from
+# config/backend prints a notice naming both, so the configured value is
+# visibly the fallback rather than silently ignored. Auto-detect fires only
+# when nothing was explicitly configured, so an explicit setting wins over it
+# and leaves FM_BACKEND_DETECTED/FM_BACKEND_DETECT_SIGNAL empty. Called directly
 # (not in a command substitution), the one detection that chose the backend
 # also leaves its signal globals for the caller's provenance record.
 # Auto-detected herdr and rex stay silent like tmux. Auto-detected cmux
@@ -460,12 +506,30 @@ fm_backend_explicit_name() {
 # signal prints the same class of notice; a live app-terminal candidate that
 # cannot select (no usable toolchain) is not a detection, and a notice names
 # the missing piece instead of switching.
-# Paseo and tern are never auto-detected, so they only ever come out of this
-# function from FM_BACKEND or config/backend.
+# The terminal-tab paseo adapter and tern are never auto-detected, so they only
+# ever come out of this function from FM_BACKEND or config/backend.
 fm_backend_resolve() {
-  local marker toolchain
+  local marker toolchain configured
   FM_BACKEND_DETECTED=""
   FM_BACKEND_DETECT_SIGNAL=""
+  if [ -n "${FM_BACKEND:-}" ]; then
+    FM_BACKEND_RESOLVED=$FM_BACKEND
+    return 0
+  fi
+  if fm_backend_detect_host >/dev/null; then
+    FM_BACKEND_RESOLVED=$FM_BACKEND_HOST_DETECTED
+    FM_BACKEND_DETECTED=$FM_BACKEND_HOST_DETECTED
+    FM_BACKEND_DETECT_SIGNAL=$FM_BACKEND_HOST_SIGNAL
+    if configured=$(fm_backend_explicit_name) && [ "$configured" != "$FM_BACKEND_RESOLVED" ]; then
+      case "$FM_BACKEND_HOST_SIGNAL" in
+        paseo-agent-host) marker="a Paseo agent (${PASEO_AGENT_ID:-})" ;;
+        orca-chat) marker="an Orca chat" ;;
+        *) marker="an Orca terminal" ;;
+      esac
+      echo "NOTICE: this Firstmate session runs in $marker, so new workers use backend $FM_BACKEND_RESOLVED rather than config/backend's '$configured'. Pass --backend <name> or set FM_BACKEND to choose another." >&2
+    fi
+    return 0
+  fi
   FM_BACKEND_RESOLVED=$(fm_backend_explicit_name) && return 0
   if fm_backend_detect >/dev/null; then
     FM_BACKEND_RESOLVED=$FM_BACKEND_DETECTED
@@ -548,6 +612,7 @@ fm_backend_required_tools() {  # <backend>
     tern)   printf '%s' 'tern jq treehouse' ;;
     hc)     printf '%s' 'hc jq treehouse' ;;
     orca)   printf '%s' 'orca' ;;
+    paseo-agent) printf '%s' 'paseo jq treehouse' ;;
     t3code) printf '%s' 'node treehouse' ;;
     *) return 1 ;;
   esac
@@ -562,7 +627,7 @@ fm_backend_required_tool_available() {  # <backend> <tool>
       fm_backend_source cmux >/dev/null 2>&1 || return 1
       fm_backend_cmux_bin >/dev/null 2>&1
       ;;
-    paseo:paseo)
+    paseo:paseo|paseo-agent:paseo)
       fm_backend_source paseo >/dev/null 2>&1 || return 1
       fm_backend_paseo_bin >/dev/null 2>&1
       ;;
@@ -609,6 +674,10 @@ fm_backend_target_of_meta() {  # <meta-file>
   fi
   if [ "$backend" = t3code ]; then
     terminal=$(fm_meta_get "$meta" t3_thread_id)
+    [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
+  fi
+  if [ "$backend" = paseo-agent ]; then
+    terminal=$(fm_meta_get "$meta" paseo_agent_id)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
   fi
   window=$(fm_meta_get "$meta" window)
@@ -894,6 +963,26 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       fi
       window=$thread
       ;;
+    paseo-agent)
+      [ "$binding" = "$id" ] || {
+        echo "REFUSED: Paseo agent endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        return 1
+      }
+      thread=$(fm_backend_meta_exact_value "$meta" paseo_agent_id) || thread=
+      workspace=$(fm_backend_meta_exact_value "$meta" paseo_agent_workspace_id) || workspace=
+      [ -n "$thread" ] || {
+        echo "REFUSED: missing paseo_agent_id in $meta; cannot stop the Paseo agent; preserving task state." >&2
+        return 1
+      }
+      # Paseo assigns the agent a UUID and the workspace a wks_ id.
+      case "$thread" in *[!0-9a-fA-F-]*) thread= ;; esac
+      if [ "$window" != "fm-$id" ] || [ -z "$thread" ] \
+        || ! fm_backend_endpoint_atom_valid "$workspace"; then
+        echo "REFUSED: Paseo agent endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        return 1
+      fi
+      window=$thread
+      ;;
     tern)
       [ "$binding" = "$id" ] || {
         echo "REFUSED: legacy tern endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
@@ -957,7 +1046,7 @@ fm_backend_meta_for_window() {  # <target> <state-dir>
         case "$line" in
           window=*) window=${line#*=} ;;
           terminal=*) terminal=${line#*=} ;;
-          t3_thread_id=*) thread=${line#*=} ;;
+          t3_thread_id=*|paseo_agent_id=*) thread=${line#*=} ;;
         esac
       done < "$meta" 2>/dev/null || true
     fi
@@ -1053,6 +1142,9 @@ fm_backend_source() {  # <name>
     t3code)
       set -- fm-composer-lib.sh fm-transition-lib.sh
       ;;
+    paseo-agent)
+      set -- fm-backend-hometag-lib.sh fm-composer-lib.sh fm-transition-lib.sh backends/paseo.sh
+      ;;
     tern)
       set -- fm-backend-hometag-lib.sh fm-composer-lib.sh fm-timeout-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh fm-hermes-process-lib.sh fm-cursor-lib.sh
       ;;
@@ -1109,6 +1201,15 @@ fm_backend_source() {  # <name>
         # shellcheck source=/dev/null
         . "$adapter" || return 1
         _FM_BACKEND_PASEO_SOURCED=1
+      fi
+      ;;
+    paseo-agent)
+      # The native-agent adapter reuses the Paseo CLI helpers in paseo.sh.
+      fm_backend_source paseo || return 1
+      if [ -z "${_FM_BACKEND_PASEO_AGENT_SOURCED:-}" ]; then
+        # shellcheck source=/dev/null
+        . "$adapter" || return 1
+        _FM_BACKEND_PASEO_AGENT_SOURCED=1
       fi
       ;;
     rex)
@@ -1214,6 +1315,7 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     paseo) fm_backend_paseo_capture "$@" ;;
     rex) fm_backend_rex_capture "$@" ;;
     t3code) fm_backend_t3code_capture "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_capture "$@" ;;
     tern) fm_backend_tern_capture "$@" ;;
     hc) fm_backend_hc_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
@@ -1270,6 +1372,7 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     paseo) fm_backend_paseo_send_key "$@" ;;
     rex) fm_backend_rex_send_key "$@" ;;
     t3code) fm_backend_t3code_send_key "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_send_key "$@" ;;
     tern) fm_backend_tern_send_key "$@" ;;
     hc) fm_backend_hc_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
@@ -1315,6 +1418,7 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     paseo) fm_backend_paseo_send_text_submit "$@" || rc=$? ;;
     rex) fm_backend_rex_send_text_submit "$@" || rc=$? ;;
     t3code) fm_backend_t3code_send_text_submit "$@" || rc=$? ;;
+    paseo-agent) fm_backend_paseo_agent_send_text_submit "$@" || rc=$? ;;
     tern) fm_backend_tern_send_text_submit "$@" || rc=$? ;;
     hc) fm_backend_hc_send_text_submit "$@" || rc=$? ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; rc=1 ;;
@@ -1352,6 +1456,7 @@ fm_backend_kill() {  # <backend> <target>
     paseo) fm_backend_paseo_kill "$@" ;;
     rex) fm_backend_rex_kill "$@" ;;
     t3code) fm_backend_t3code_kill "$1" ;;
+    paseo-agent) fm_backend_paseo_agent_kill "$1" ;;
     tern) fm_backend_tern_kill "$@" ;;
     hc) fm_backend_hc_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
@@ -1393,6 +1498,7 @@ fm_backend_busy_state() {  # <backend> <target>
     herdr) fm_backend_herdr_busy_state "$@" ;;
     rex) fm_backend_rex_busy_state "$@" ;;
     t3code) fm_backend_t3code_busy_state "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_busy_state "$@" ;;
     tern) fm_backend_tern_busy_state "$@" ;;
     hc) fm_backend_hc_busy_state "$@" ;;
     *) printf 'unknown' ;;
@@ -1424,6 +1530,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
     rex) fm_backend_rex_composer_state "$@" ;;
     zellij) fm_backend_zellij_composer_state "$@" ;;
     t3code) fm_backend_t3code_composer_state "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_composer_state "$@" ;;
     tern) fm_backend_tern_composer_state "$@" ;;
     hc) fm_backend_hc_composer_state "$@" ;;
     *) printf 'unknown' ;;
@@ -1492,6 +1599,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       fm_backend_source t3code || return 1
       fm_backend_t3code_target_exists "$target"
       ;;
+    paseo-agent)
+      fm_backend_source paseo-agent || return 1
+      fm_backend_paseo_agent_target_exists "$target"
+      ;;
     tern)
       fm_backend_source tern || return 1
       fm_backend_tern_target_ready "$target" "$expected_label"
@@ -1544,6 +1655,7 @@ fm_backend_agent_state() {  # <backend> <target>
     herdr) fm_backend_herdr_agent_state "$target" ;;
     rex) fm_backend_rex_agent_state "$target" ;;
     t3code) fm_backend_t3code_agent_state "$target" ;;
+    paseo-agent) fm_backend_paseo_agent_agent_state "$target" ;;
     tern) fm_backend_tern_agent_state "$target" ;;
     hc) fm_backend_hc_agent_state "$target" ;;
     *) printf 'unverified' ;;
@@ -1580,7 +1692,7 @@ fm_backend_agent_alive() {  # <backend> <target>
 # fm_backend_has_push: 0 if <backend> exposes a native transition push stream.
 fm_backend_has_push() {  # <backend>
   case "$1" in
-    herdr|rex|t3code) return 0 ;;
+    herdr|rex|t3code|paseo-agent) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1598,6 +1710,7 @@ fm_backend_events_capable() {  # <backend> <session>
     herdr) fm_backend_herdr_events_capable "$@" ;;
     rex) fm_backend_rex_events_capable "$@" ;;
     t3code) fm_backend_t3code_events_capable "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_events_capable "$@" ;;
     *) return 1 ;;
   esac
 }
@@ -1617,6 +1730,7 @@ fm_backend_wait_transition() {  # <backend> <session> <timeout_secs> <state_dir>
     herdr) fm_backend_herdr_wait_transition "$@" ;;
     rex) fm_backend_rex_wait_transition "$@" ;;
     t3code) fm_backend_t3code_wait_transition "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_wait_transition "$@" ;;
     *) return 2 ;;
   esac
 }
@@ -1630,6 +1744,7 @@ fm_backend_commit_transition() {  # <backend> <state_dir> <session> <record>
     herdr) fm_backend_herdr_commit_transition "$@" ;;
     rex) fm_backend_rex_commit_transition "$@" ;;
     t3code) fm_backend_t3code_commit_transition "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_commit_transition "$@" ;;
     *) return 1 ;;
   esac
 }
@@ -1643,6 +1758,7 @@ fm_backend_clear_transition() {  # <backend> <state_dir> <window>
     herdr) fm_backend_herdr_clear_transition "$@" ;;
     rex) fm_backend_rex_clear_transition "$@" ;;
     t3code) fm_backend_t3code_clear_transition "$@" ;;
+    paseo-agent) fm_backend_paseo_agent_clear_transition "$@" ;;
     *) return 0 ;;
   esac
 }
@@ -1653,13 +1769,14 @@ fm_backend_clear_transition() {  # <backend> <state_dir> <window>
 fm_backend_event_session() {  # <backend> <target>
   case "$1" in
     t3code) printf 't3code' ;;
+    paseo-agent) printf 'paseo-agent' ;;
     *) printf '%s' "${2%%:*}" ;;
   esac
 }
 
 fm_backend_transition_target() {  # <backend> <session> <endpoint-id>
   case "$1" in
-    t3code) printf '%s' "$3" ;;
+    t3code|paseo-agent) printf '%s' "$3" ;;
     *) printf '%s:%s' "$2" "$3" ;;
   esac
 }
@@ -1669,6 +1786,7 @@ fm_backend_transition_target() {  # <backend> <session> <endpoint-id>
 fm_backend_transition_note() {  # <backend> <record>
   case "$1" in
     t3code) fm_backend_source t3code && fm_backend_t3code_transition_note "$2" ;;
+    paseo-agent) fm_backend_source paseo-agent && fm_backend_paseo_agent_transition_note "$2" ;;
   esac
 }
 
@@ -1679,6 +1797,7 @@ fm_backend_runtime_check() {  # <backend>
   case "$1" in
     orca) fm_backend_orca_runtime_check ;;
     t3code) fm_backend_t3code_runtime_check ;;
+    paseo-agent) fm_backend_paseo_agent_runtime_check ;;
     *) return 0 ;;
   esac
 }
@@ -1687,6 +1806,7 @@ fm_backend_validate_harness() {  # <backend> <harness>
   fm_backend_source "$1" || return 1
   case "$1" in
     t3code) fm_backend_t3code_validate_harness "$2" ;;
+    paseo-agent) fm_backend_paseo_agent_validate_harness "$2" ;;
     *) return 0 ;;
   esac
 }
