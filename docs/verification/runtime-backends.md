@@ -2595,8 +2595,31 @@ Verified on 2026-11-25: `fm_backend_paseo_agent_model_selection` resolved models
 
 Host-follow negative case: a shell in a Paseo terminal tab descends from the desktop app's terminal worker, not the daemon, so `fm_backend_detect_host` rejected it even with a forged `PASEO_AGENT_ID`.
 The primary's omp process descends from the daemon worker, which is the positive ancestry the check requires.
-Positive host selection from a spawn the primary runs is not yet recorded.
 Orca host selection is not verified live, because Orca was not running on this host.
+
+Positive case, verified live on 2026-11-25: a helper omp agent started with `paseo run --workspace` in the Firstmate home's own workspace stood in for the primary, so the primary itself was not disturbed.
+Its process ancestry was omp, then the `Paseo Daemon` worker, and the agent read back unarchived with the home as its working directory.
+From that agent, `fm-spawn.sh <id> <project> --scout` without `--backend` printed the notice that new workers use `paseo-agent` rather than config/backend's `orca`, and the task record carried `backend=paseo-agent` and `backend_detect=paseo-agent-host`.
+The first two attempts exposed two defects, both fixed and covered by `tests/fm-backend-paseo-agent.test.sh`:
+
+- `fm-spawn.sh` reset its own `PASEO_AGENT_ID` variable before backend resolution, which hid the inherited host signal, so the spawn fell back to config/backend.
+- omp's embedded shell runs `bash <script>` and `bash -c` in-process with a synthetic `$$` that names no process, so an ancestry walk starting from `$$` found nothing; the walk now runs inside an absolute `/bin/sh`, which is always a real descendant process.
+
+### Live scout lifecycle
+
+Verified on 2026-11-25 with the host-follow spawn above: a trivial scout of the Firstmate repository with omp, Claude Opus 5.5, and low effort.
+
+| Step | Result |
+| --- | --- |
+| Spawn | Treehouse leased a pooled slot, a local Paseo workspace named `fm-<id>` opened on it under the project, and the agent started there with the launch brief as its first message. |
+| Native agent | `paseo ls -g --label fm-task=<id>` listed the agent; the web build's sidebar showed it in its own workspace with its model, effort, and full access (`05-stage5-scout-native-agent-own-workspace.png`). |
+| Idle | The agent wrote its report, ended its turn, and read back idle while it waited for the steer. |
+| Steer | `fm-send.sh <id> <text>` exited 0, recorded `001.msg` in the steering inbox, and the doorbell arrived as a native Paseo message; the agent acted on the message and moved it to `handled/` (`06-stage5-scout-steered-and-done.png`). |
+| Done wake | The agent's `done` line ended the home watcher's cycle with reason `actionable-signal`, and the primary received the `signal:` wake naming the task's status file and drained it. |
+| Teardown | `fm-teardown.sh <id>` exited 0: the agent read back closed and archived, the workspace was archived, the slot returned to the pool, the task record was removed, and the backlog item closed. |
+
+The teardown also reaped two processes still running in the worktree after the agent's archive, through its existing leaked-process sweep.
+Running the branch's scripts from the ship worktree against the live home printed the guard's worktree-tangle and watcher-down warnings, because the code root was a feature branch and the home's watcher runs from the home's own code root; neither applies to a home running its own code.
 
 ### Hidden wake delivery for a Paseo-hosted primary
 
@@ -2628,8 +2651,7 @@ Read on 2026-11-25 from the Paseo 0.17.4 server package (`@getpaseo/server` `dis
 
 ### Not verified
 
-- A live end-to-end worker spawn from a Paseo-hosted primary, steer, done wake, and teardown is not yet recorded.
-- Positive host-follow selection of `paseo-agent` or `orca` from a real host session is not yet recorded.
+- Orca host-follow from a live Orca session is not recorded.
 - Behaviour on macOS has not been exercised for this backend.
 
 ## Rex
