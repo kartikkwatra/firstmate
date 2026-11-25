@@ -561,10 +561,11 @@ For spawn-capable adapters, the runtime session-provider backend controls where 
 | `paseo` | Experimental; no dedicated real-backend CI lane | [`docs/paseo-backend.md`](paseo-backend.md) |
 | `rex` | Experimental; no dedicated real-backend CI lane | [`docs/rex-backend.md`](rex-backend.md) |
 | `t3code` | Experimental; no dedicated real-backend CI lane | [`docs/t3code-backend.md`](t3code-backend.md) |
+| `paseo-agent` | Experimental; no dedicated real-backend CI lane | [`docs/paseo-agent-backend.md`](paseo-agent-backend.md) |
 | `tern` | Experimental; no dedicated real-backend CI lane | [`docs/tern-backend.md`](tern-backend.md) |
 | `hc` | Experimental; the `tests-hc` lane runs the hc family against the pinned build | [`docs/hc-backend.md`](hc-backend.md) |
 
-Treehouse remains the worktree provider for tmux, herdr, zellij, cmux, paseo, rex, t3code, tern, and hc, since herdr, zellij, cmux, paseo, rex, t3code, tern, and hc are session providers only; Orca provides both the task worktree and terminal endpoint.
+Treehouse remains the worktree provider for tmux, herdr, zellij, cmux, paseo, paseo-agent, rex, t3code, tern, and hc, since herdr, zellij, cmux, paseo, paseo-agent, rex, t3code, tern, and hc are session providers only; Orca provides both the task worktree and terminal endpoint.
 
 ### Backend selection order
 
@@ -573,9 +574,12 @@ New spawns choose the backend in this order:
 1. An explicit `--backend` flag authorized for that exact task by a present captain instruction or the task's own accepted brief.
    A later task cannot inherit that authority by analogy.
 2. `FM_BACKEND`.
-3. The first non-empty line of local, gitignored `config/backend`.
-4. Runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, `TERM_PROGRAM=rex` with `REX_BLOCK`, cmux runtime signals, or the Herdr app signal.
-5. Default `tmux`.
+3. The launching session's own host, for ship and scout spawns: a Firstmate running inside a Paseo agent selects `paseo-agent`, and one running inside an Orca chat or terminal selects `orca`.
+   [Host-follow](paseo-agent-backend.md#host-follow) owns what counts as a host, and a host that overrides a different `config/backend` value prints a notice naming both.
+   A `--secondmate` spawn skips this step.
+4. The first non-empty line of local, gitignored `config/backend`.
+5. Runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, `TERM_PROGRAM=rex` with `REX_BLOCK`, cmux runtime signals, or the Herdr app signal.
+6. Default `tmux`.
 
 If more than one runtime marker is present, detection resolves innermost-first: `$TMUX` is checked before `HERDR_ENV=1`, which is checked before Rex's `TERM_PROGRAM=rex` with `REX_BLOCK`, which is checked before cmux's primary `CMUX_WORKSPACE_ID` marker and its documented fallback signals - tmux, herdr, or Rex started from inside a cmux terminal is the innermost, currently-executing layer, while cmux itself (a terminal application, not a nestable multiplexer) is checked after those nested runtimes.
 The Herdr app signal is checked after cmux; contradictory marker sets keep the earlier surface's verdict instead of switching.
@@ -584,13 +588,15 @@ See [`docs/cmux-backend.md`](cmux-backend.md#runtime-detection) for why cmux can
 
 Auto-detected Herdr and Rex stay silent like tmux, while auto-detected cmux prints a stderr notice naming `config/backend` and `--backend tmux` because cmux remains experimental.
 For hc notices, missing-piece handling, and detection metadata, see [Runtime auto-detection](hc-backend.md#runtime-auto-detection).
-T3 Code, Zellij, Orca, Paseo, and tern are never auto-detected; select them by putting the name in a local `config/backend` file, by exporting `FM_BACKEND=<name>`, or by telling the first mate in chat.
-Paseo and tern stay explicit-only because their runtime markers leak into every descendant process, so they cannot stand for a selection (see [`docs/paseo-backend.md`](paseo-backend.md#selection-is-explicit) and [`docs/tern-backend.md`](tern-backend.md#selection-is-explicit)); bare `HC_TERMINAL_*` markers leak the same way, so hc detection requires the Herdr app's own signal.
+T3 Code, Zellij, Paseo's terminal-tab adapter, and tern are never auto-detected; select them by putting the name in a local `config/backend` file, by exporting `FM_BACKEND=<name>`, or by telling the first mate in chat.
+Orca and `paseo-agent` are never auto-detected either; outside step 3's verified host they are selected the same explicit ways.
+Paseo and tern markers leak into every descendant process, so they cannot stand for a selection (see [`docs/paseo-backend.md`](paseo-backend.md#selection-is-explicit) and [`docs/tern-backend.md`](tern-backend.md#selection-is-explicit)); bare `HC_TERMINAL_*` markers leak the same way, so hc detection requires the Herdr app's own signal.
 
 ### Accepted backends and secondmate limits
 
-Any value other than `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, `tern`, or `hc` is rejected until another adapter is implemented and verified.
-`fm-spawn.sh` accepts `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, `tern`, and `hc` for ship and scout tasks; `backend=orca`, `backend=cmux`, `backend=paseo`, `backend=tern`, and `backend=hc` all still refuse `--secondmate` until secondmate launch semantics are designed for each, while `backend=t3code` supports secondmates and runs only the `claude` and `codex` harnesses.
+Any value other than `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `paseo-agent`, `rex`, `t3code`, `tern`, or `hc` is rejected until another adapter is implemented and verified.
+`fm-spawn.sh` accepts `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `paseo-agent`, `rex`, `t3code`, `tern`, and `hc` for ship and scout tasks; `backend=orca`, `backend=cmux`, `backend=paseo`, `backend=paseo-agent`, `backend=tern`, and `backend=hc` all still refuse `--secondmate` until secondmate launch semantics are designed for each, while `backend=t3code` supports secondmates and runs only the `claude` and `codex` harnesses.
+`backend=paseo-agent` runs only the `omp` harness.
 
 `codex-app` is not an accepted runtime backend yet; [`docs/codex-app-backend.md`](codex-app-backend.md) owns the Codex App boundary.
 
@@ -611,6 +617,8 @@ The compatibility helper `fm_backend_agent_alive` continues to collapse those de
 
 - A paseo spawn additionally version-gates against the installed `paseo` binary's version, requires `jq`, and starts the daemon with `paseo start` only when it is simply not up yet (see [`docs/paseo-backend.md`](paseo-backend.md) "Setup"), refusing loudly on a missing CLI, an old version, or an unreachable daemon.
 
+- A paseo-agent spawn, control action, or teardown additionally version-gates the `paseo` CLI at 0.17 or newer, requires `jq` and `treehouse`, and requires the Paseo app's daemon to be reachable, which it never starts (see [`docs/paseo-agent-backend.md`](paseo-agent-backend.md#setup)).
+
 - A rex spawn additionally gates both the `rex` CLI and the running Rex server at API revision 5 or newer and requires `jq` (see [`docs/rex-backend.md`](rex-backend.md) "Setup"), refusing loudly on a missing CLI, an older API revision, or a server that cannot be reached or started.
 - A tern spawn requires `tern` and `jq`, refusing loudly when either is missing (see [`docs/tern-backend.md`](tern-backend.md) "Setup"); bootstrap reports a missing `tern` as `MISSING_MANUAL` with `https://stencil.so/tern`.
 - For hc spawn prerequisites, binary resolution, and compatibility gates, see [`docs/hc-backend.md`](hc-backend.md#setup).
@@ -627,6 +635,8 @@ Task meta records `backend=` only for a non-default backend; an absent `backend=
 
 - A zellij task additionally records `zellij_session=`, `zellij_tab_id=`, and `zellij_pane_id=`.
 - A paseo task additionally records `paseo_terminal_id=` and `paseo_workspace_id=`, with the terminal NAME as routing authority (see [`docs/paseo-backend.md`](paseo-backend.md) "Task shape and metadata").
+- A paseo-agent task additionally records `paseo_agent_id=` and `paseo_agent_workspace_id=`, with `window=fm-<id>` kept as the shared firstmate alias (see [`docs/paseo-agent-backend.md`](paseo-agent-backend.md#task-shape-and-metadata)).
+- A task whose backend came from the launching session's host records `backend_detect=` with `paseo-agent-host`, `orca-chat`, or `orca-terminal`.
 - A rex task additionally records `rex_server=`, `rex_session_id=`, `rex_window_id=`, and `rex_block_id=`, with the immutable block id as routing authority (see [`docs/rex-backend.md`](rex-backend.md) "Task shape and metadata").
 
 - An Orca task additionally records `orca_worktree_id=` and `terminal=`, with `window=fm-<id>` kept as the shared firstmate alias.
@@ -643,7 +653,7 @@ Task selectors for `fm-peek.sh`, `fm-send.sh`, and `fm-crew-state.sh` resolve ce
 A selector containing `:` is passed through as an explicit backend endpoint escape hatch.
 
 Otherwise an exact task id matching `state/<id>.meta` wins before the legacy `fm-<id>` label fallback, so task ids that themselves start with `fm-` route to their own metadata instead of being stripped.
-A metadata-routed selector returns the recorded backend target (`terminal=` for Orca, `t3_thread_id=` for T3 Code, otherwise `window=`), and matching explicit targets can still recover the recorded backend when metadata contains the same endpoint.
+A metadata-routed selector returns the recorded backend target (`terminal=` for Orca, `t3_thread_id=` for T3 Code, `paseo_agent_id=` for Paseo agents, otherwise `window=`), and matching explicit targets can still recover the recorded backend when metadata contains the same endpoint.
 
 Only metadata-routed task selectors carry secondmate-marker and Codex-harness context; explicit endpoint escape hatches do not.
 These rules are the single owner of the task-selector vocabulary.
@@ -1703,6 +1713,7 @@ An unqualified model, an undeclared provider, or a raw Pi launch command, which 
 When a file is present, supported command-line launches of that runner from this home use it: ships, scouts, local secondmate agents, raw Claude launch commands, and relaunches.
 A local secondmate can override this default with its own [per-secondmate account pin](#per-secondmate-account-pins).
 T3 Code selects the account through its provider instance instead, so `backend=t3code` refuses a worker account pin before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
+Paseo's provider owns the account for `backend=paseo-agent`, which refuses a worker account pin before mutation; [`paseo-agent-backend.md`](paseo-agent-backend.md#active-limits) owns that backend limit.
 A raw Claude launch command refuses if its leading assignments set `CLAUDE_CONFIG_DIR` or a credential that a pinned launch unsets, such as `ANTHROPIC_API_KEY`.
 The assignment would override the pin.
 The refusal names the variable; remove that assignment from the raw command, or change or remove `config/claude-account`.
@@ -1861,6 +1872,7 @@ The flag is read only for ship and scout spawns, secondmate charters never take 
 
 The optional local, gitignored `config/launch-env-allowlist` limits the ambient environment passed to newly launched workers, scouts, and secondmates, including relaunches.
 T3 Code starts the provider from the server's environment and cannot apply this command boundary, so `backend=t3code` refuses when the file exists; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
+Paseo starts a `backend=paseo-agent` worker with its provider's environment, so that backend also refuses when the file exists; [`paseo-agent-backend.md`](paseo-agent-backend.md#active-limits) owns that backend limit.
 With no file, ambient inheritance remains unfiltered: selected harness markers are cleared, while the provider, long-lived terminal daemon, and shell initialization determine which other variables reach the worker.
 
 Do not assume every worker inherits the invoking Firstmate process's current environment.
@@ -1955,6 +1967,7 @@ The optional local, gitignored `config/keep-ai-trailers` presence flag opts this
 With the flag absent, every Claude command line Firstmate builds carries inline `--settings` JSON with `"attribution":{"commit":"","pr":"","sessionUrl":false}`, every Devin worker config sets `"attribution": false`, and every fleet launch appends a worker-scoped `GIT_CONFIG` `core.hooksPath` entry pointing at `state/<id>.git-hooks`, where git's `commit-msg` hook strips known AI trailers even when a runtime injects them after the typed message.
 The entry follows any `GIT_CONFIG_*` entries the worker inherits, so an inherited scoped `credential.helper` still applies to the worker and to the repository's own hooks, such as a git-lfs `pre-push`; an inherited `GIT_CONFIG_COUNT` that is not a decimal number, or that leaves no room for another entry within Git's signed int, stops the launch before the worker runs.
 T3 Code owns its provider command and cannot carry Claude's inline setting, but its per-worktree environment overlay selects the same Git hook; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
+Paseo's omp provider refuses `GIT_CONFIG_*` session variables, so `backend=paseo-agent` cannot deliver the strip hooks and its spawn warns instead; [`paseo-agent-backend.md`](paseo-agent-backend.md#active-limits) owns that backend limit.
 When the flag is present, Claude launches omit those attribution-off settings, Devin worker configs keep the user config's `attribution` setting (Devin's default is on), and fleet launches do not install or select the strip hooks, so Git uses the repository's configured hooks directly.
 Cortex Code has no attribution switch and its model writes a `Generated with Snowflake CoCo` line and a `Co-authored-by: Snowflake CoCo` trailer itself, so the strip hooks are the only mechanism that removes them from a Cortex worker's commits.
 `bin/fm-git-strip-ai-trailers.sh` owns the identities, the install, and chaining the hooks of whichever repository git is running in, including when `git -c core.hooksPath` supplies the pane's hook override, so a project hook such as husky still runs when stripping is enabled.
@@ -2109,6 +2122,7 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 - On pane backends, except for `ultra` under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
   For T3 Code, follow the [catalog validation contract](t3code-backend.md#provider-instances-and-models).
+  For Paseo agents, follow the [provider catalog check](paseo-agent-backend.md#worker-lifecycle).
 - Bootstrap reports unsupported harness/model/effort combinations as a `CREW_DISPATCH` diagnostic when they are visible in the file.
 
 See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`; its Pi default declares the `claude` provider required for typed resolution of that Anthropic model.
@@ -2370,7 +2384,7 @@ Lavish is a presentation-only dependency for visual decisions and reports; nonvi
 
 **Backend requirements**
 
-The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then `config/backend`, then runtime auto-detection, then default `tmux`, so a home is never told to install a tool an inactive backend or feature would need.
+The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then the session's own host, then `config/backend`, then runtime auto-detection, then default `tmux`, so a home is never told to install a tool an inactive backend or feature would need.
 `fm_backend_required_tools` in `bin/fm-backend.sh` owns the backend additions:
 
 | Resolved backend | Additional tools |
@@ -2383,16 +2397,17 @@ The per-backend delta is required only for the backend resolved from `FM_BACKEND
 | `paseo` | `paseo`, `jq`, `treehouse` |
 | `rex` | `rex`, `jq`, `treehouse` |
 | `t3code` | `node`, `treehouse` |
+| `paseo-agent` | `paseo`, `jq`, `treehouse` |
 | `tern` | `tern`, `jq`, `treehouse` |
 
-The JSON-emitting adapters (`herdr`, `zellij`, `cmux`, `paseo`, `rex`, `tern`) need `jq` because their spawn and liveness paths parse backend JSON.
-Every session-provider-only backend (`tmux`, `herdr`, `zellij`, `cmux`, `paseo`, `rex`, `t3code`, `tern`) uses `treehouse` for worktrees.
+The JSON-emitting adapters (`herdr`, `zellij`, `cmux`, `paseo`, `paseo-agent`, `rex`, `tern`) need `jq` because their spawn and liveness paths parse backend JSON.
+Every session-provider-only backend (`tmux`, `herdr`, `zellij`, `cmux`, `paseo`, `paseo-agent`, `rex`, `t3code`, `tern`) uses `treehouse` for worktrees.
 
 Backend tool availability uses the adapter's own executable resolver, so bootstrap and spawn agree on supported non-`PATH` locations such as cmux's bundled CLI and the Rex server bundle's `rex`.
 An unknown resolved backend emits `BACKEND_INVALID` and blocks dispatch instead of silently dropping its dependency delta or falling back to tmux.
 
 Orca provides both the task worktree and terminal endpoint (see "Runtime backend" above), so `backend=orca` requires only `orca` on top of the universal toolchain and skips both `treehouse` and every other backend's session CLI.
-A herdr, zellij, cmux, paseo, rex, t3code, or tern home is therefore never told `tmux` is missing, and the `treehouse` durable-lease and pool-root upgrade check runs only for the backends that actually use treehouse.
+A herdr, zellij, cmux, paseo, paseo-agent, rex, t3code, or tern home is therefore never told `tmux` is missing, and the `treehouse` durable-lease and pool-root upgrade check runs only for the backends that actually use treehouse.
 
 **Feature-specific requirements**
 
@@ -3517,7 +3532,7 @@ FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity readers, mainly for tests
-FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux/paseo/rex/t3code/tern support ship/scout spawns, codex-app is not accepted
+FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux/paseo/paseo-agent/rex/t3code/tern support ship/scout spawns, codex-app is not accepted
 FM_T3CODE_ORIGIN=       # optional T3 Code server origin for bin/fm-t3-mcp.mjs login; the default is read from ~/.t3/userdata/server-runtime.json
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh delivers to ship and scout environments, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set

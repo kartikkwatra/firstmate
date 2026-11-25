@@ -186,12 +186,14 @@ The worktree and the task's records are unaffected either way.
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
   Orca names only an interrupt and an Enter of its own, but writes the Escape and Ctrl+U control bytes to the pty through `terminal send --text`, so it delivers both.
-  T3 Code has no composer, so Escape and Ctrl+C are both a turn interrupt and Ctrl+U is refused.
-- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux, herdr, rex, and t3code - because without one the "the agent stopped" postcondition cannot be proven.
+  T3 Code and Paseo agents have no composer, so Escape and Ctrl+C are both a turn interrupt and Ctrl+U is refused.
+- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux, herdr, rex, t3code, and paseo-agent - because without one the "the agent stopped" postcondition cannot be proven.
   zellij, orca, cmux, and paseo are refused rather than reported as successful blind.
 - On t3code, `exit` refuses before anything is sent: a T3 thread has no composer for a typed exit command, and T3's `/mcp` tools offer no session stop.
-- `relaunch` additionally requires a backend that can host a replacement agent - tmux, herdr, and rex.
+- On paseo-agent, `exit` is Paseo's archive of the agent, proven by the agent reading back archived ([`paseo-agent-backend.md`](paseo-agent-backend.md#control)).
+- `relaunch` additionally requires a backend that can host a replacement agent - tmux, herdr, rex, and paseo-agent.
   t3code is refused before anything is stopped: a T3 thread keeps its conversation, so a new turn or a provider change on it continues the same agent rather than launching a fresh one.
+  A paseo-agent relaunch starts a new Paseo agent in the task's recorded workspace.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts; a Rex `unreadable` acts only once the absence proof above settles it.
 - `exit`'s composer-empty check, above, is itself a fail-closed boundary that `relaunch` inherits by stopping the old agent through `exit`.
@@ -215,6 +217,7 @@ Backend capability comes from each adapter's real surface, not from a policy cho
 | paseo | yes | yes | yes | yes | no | no |
 | rex | yes | yes | yes | yes | yes | yes |
 | t3code | yes | yes | yes | no | yes | no |
+| paseo-agent | yes | yes | yes | no | yes | yes |
 
 Per-harness interrupt keys, repeat counts, composer clears, exit commands, and supported task kinds live in `bin/fm-control-lib.sh` and are exercised for every verified harness by `tests/fm-control.test.sh`, with adapters outside its lane pinning their control mechanics in their own harness suites.
 The empirical basis for each adapter's value is the `harness-adapters` skill's verification record for that adapter.

@@ -3,6 +3,8 @@
 Paseo is an experimental macOS GUI terminal backend.
 It provides task workspaces and terminals while Treehouse continues to provide git worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared selection and metadata semantics.
+This page covers the terminal-tab adapter, `backend=paseo`.
+The separate [`paseo-agent`](paseo-agent-backend.md) backend runs each worker as a native Paseo agent in Paseo's own chat UI instead.
 
 ## Setup
 
@@ -16,7 +18,8 @@ Prerequisites:
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
 
 The bundled CLI is not always installed on `PATH` with the app.
-The adapter prefers `command -v paseo` and otherwise uses `/Applications/Paseo.app/Contents/Resources/bin/paseo`.
+The adapter prefers `command -v paseo`, then the CLI the running app names in `$PASEO_CLI`, and otherwise uses `/Applications/Paseo.app/Contents/Resources/bin/paseo`.
+On Linux the AppImage mounts its bundle at a path that changes on every launch, so `$PASEO_CLI`, which the app exports into every process it starts, is how the CLI is found there.
 
 No socket-access configuration is needed.
 The daemon listens on `127.0.0.1:6767` by default, and `paseo status` reports its reachability.
@@ -32,7 +35,8 @@ Verify setup by spawning a small task and confirming metadata contains `backend=
 
 ## Selection is explicit
 
-Paseo is explicit-only, like zellij and orca: `config/backend`, `FM_BACKEND=paseo`, or `--backend paseo` select it, and nothing else does.
+The terminal-tab adapter is explicit-only, like zellij: `config/backend`, `FM_BACKEND=paseo`, or `--backend paseo` select it, and nothing else does.
+A Firstmate running inside a Paseo agent selects [`paseo-agent`](paseo-agent-backend.md#host-follow) as its host instead, and a Paseo terminal tab is never a host for either backend.
 Paseo stamps its markers into every descendant process: a Paseo agent exports `PASEO_AGENT_ID`, a terminal tab exports `PASEO_TERMINAL_ID` and `PASEO_WORKSPACE_ID`, and both carry `__CFBundleIdentifier=sh.paseo.desktop`.
 A tmux server started from a Paseo tab inherits all of them, so their presence proves only that some ancestor was Paseo, never that the captain chose it.
 Reading them as a selection would make Paseo an ambient default, which "Authority is explicit and never inferred" rules out; `fm_backend_detect` therefore ignores them.

@@ -440,7 +440,7 @@ family_for_basename() {
     fm-backend-cmux.test.sh|fm-backend-cmux-smoke.test.sh)
       printf '%s\n' cmux
       ;;
-    fm-backend-paseo.test.sh|fm-backend-paseo-smoke.test.sh)
+    fm-backend-paseo.test.sh|fm-backend-paseo-smoke.test.sh|fm-backend-paseo-agent.test.sh)
       printf '%s\n' paseo
       ;;
     fm-backend-rex.test.sh|fm-backend-rex-smoke.test.sh|fm-backend-rex-eventwait-smoke.test.sh)

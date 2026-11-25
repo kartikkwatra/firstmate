@@ -85,6 +85,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `backends/orca.sh`       | Experimental Orca backend adapter owning both worktree and terminal                  |
 | `backends/cmux.sh`       | Experimental cmux session-provider adapter                                           |
 | `backends/paseo.sh`      | Experimental Paseo session-provider adapter                                          |
+| `backends/paseo-agent.sh` | Experimental Paseo adapter running each worker as a native Paseo agent |
 | `backends/rex.sh`        | Experimental Rex session-provider adapter                                            |
 | `backends/t3code.sh`     | Experimental T3 Code adapter driving the agent session through `fm-t3-mcp.mjs`       |
 | `backends/tern.sh`       | Experimental tern session-provider adapter                                           |

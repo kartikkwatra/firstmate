@@ -230,6 +230,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/orca-backend.md](docs/orca-backend.md) - current setup and limits for the experimental Orca backend.
 - [docs/cmux-backend.md](docs/cmux-backend.md) - current setup, socket security, and limits for the experimental cmux backend.
 - [docs/paseo-backend.md](docs/paseo-backend.md) - current setup, terminal-name routing, and limits for the experimental Paseo backend.
+- [docs/paseo-agent-backend.md](docs/paseo-agent-backend.md) - current setup, host-follow selection, Linux notes, and limits for the experimental native Paseo agent backend.
 - [docs/rex-backend.md](docs/rex-backend.md) - current setup, auto-detection, block-id routing, the absence proof, and limits for the experimental Rex backend.
 - [docs/t3code-backend.md](docs/t3code-backend.md) - current setup, sign-in, and limits for the experimental T3 Code backend.
 - [docs/tern-backend.md](docs/tern-backend.md) - current setup, surfaces capture, native-state degradation, and limits for the experimental tern backend.

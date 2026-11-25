@@ -7,7 +7,7 @@ Firstmate agents load [`firstmate-orca`](../.agents/skills/firstmate-orca/SKILL.
 ## Setup
 
 Pick Orca when you already use the Orca macOS app and want Orca-managed worktrees and terminals instead of Treehouse plus a session multiplexer.
-Orca is macOS-only, explicit-only, and does not support secondmate spawns.
+Orca is macOS-only, selected explicitly or as the launching session's host, and does not support secondmate spawns.
 
 Prerequisites:
 
@@ -17,6 +17,7 @@ Prerequisites:
 
 Select Orca with local `config/backend` containing `orca`, `FM_BACKEND=orca` for one launch, or an explicit request to Firstmate.
 It is never auto-detected.
+A Firstmate running inside an Orca chat or terminal selects Orca as its [host](paseo-agent-backend.md#host-follow) for new ship and scout spawns.
 
 Before any spawn mutates repository state, Firstmate requires `orca status --json` to report `reachable=true` and `state="ready"`.
 The first task for a project registers that repository with `orca repo add --path` when needed.
@@ -77,7 +78,7 @@ Reinstall the CLI and rerun; [`verification/runtime-backends.md`](verification/r
 
 ## Active limits
 
-- Orca is macOS-only and explicit-only.
+- Orca is macOS-only and is selected only explicitly or as the launching session's host.
 - The app must be running and report ready.
 - Secondmate spawns are unsupported.
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.

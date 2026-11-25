@@ -2543,6 +2543,7 @@ Current active CLI findings:
 Running inside a Paseo agent exposes `PASEO_AGENT_ID`, `PASEO_AGENT_CWD`, and `PASEO_CLI`; a terminal tab created with `terminal create` exposes `PASEO_TERMINAL_ID`, `PASEO_WORKSPACE_ID`, `PASEO_CLI`, and no `PASEO_AGENT_ID`; both carry `__CFBundleIdentifier=sh.paseo.desktop` from LaunchServices (verified live 2026-09-18).
 None of them selects the backend: `fm_backend_detect` ignores every Paseo marker, because they reach every descendant process including a tmux server started from a Paseo tab.
 `PASEO_WORKSPACE_ID` and `PASEO_AGENT_ID` are consulted only after an explicit selection, to find Firstmate's own workspace for task tabs.
+`paseo-agent` host-follow reads `PASEO_AGENT_ID` only together with daemon ancestry and an agent read-back ([Paseo agents](#paseo-agents)).
 
 ```sh
 tests/fm-backend-paseo.test.sh
@@ -2550,6 +2551,86 @@ tests/fm-backend-paseo-smoke.test.sh
 ```
 
 The real smoke proves daemon reachability, shared-workspace creation and adoption, sibling tabs without a second project, current-path probing, send and keys, bounded capture, tab-only kill, and guarded exact cleanup, mirroring the cmux smoke's shape against Paseo's own CLI surface.
+
+## Paseo agents
+
+The `paseo-agent` evidence below was taken on 2026-11-25 on Linux x64 (kernel 6.18) with the Paseo 0.17.4 desktop AppImage, its CLI resolved through `$PASEO_CLI`, the paseo-omp provider plugin 5.8.2, and omp 19.1.1.
+The Firstmate primary ran as an omp agent of that Paseo daemon (`omp --mode rpc-ui`, a direct child of the daemon worker process).
+
+### Paseo CLI and daemon facts
+
+| Guarantee | Command shape | Result |
+| --- | --- | --- |
+| Agent creation in a chosen workspace | `paseo run --no-wait --json --workspace <wks> ...` | Created the agent in that workspace's directory even when the caller was itself an agent; `--workspace` wins over the caller's own workspace. |
+| `--cwd` from inside Paseo | `paseo run --cwd <dir>` from a Paseo terminal tab | Ignored; the agent started in the tab's `PASEO_WORKSPACE_ID` workspace, so the adapter always passes `--workspace`. |
+| Steer | `paseo send <id> --behavior steer` | Started an idle agent's turn and joined a running one. |
+| Interrupt | `paseo stop <id>` | Took a running agent to idle. |
+| Archive | `paseo archive <id> --force` | The agent read back `Status` closed and `Archived` true. |
+| Local workspace archive | `paseo workspace archive <wks>` on a `--isolation local` workspace | The directory stayed on disk. |
+| Managed worktree archive | `paseo workspace archive <wks>` on a Paseo-managed worktree | The directory was deleted with its uncommitted files; the branch was kept. |
+| Workspace attachment | `paseo workspace create --isolation local --project <prj> --path <wt>` | The workspace appeared under the project in the sidebar. |
+| Finish notification | an agent created with `paseo run` | No finish subscription exists; the server registers one only for MCP-created agents. |
+| Permission inventory | `paseo permit ls --json` | `[{id, agentId, agentShortId, name, description}]`. |
+| Typed errors | `paseo inspect <unknown-id> --json` | Exit 1 with `error.code` `AGENT_NOT_FOUND` printed on stderr. |
+
+paseo-omp 5.8.2 refuses `GIT_CONFIG*`, `PATH`, `HOME`, `OMP_PROFILE`, and related names in an agent's session environment (`server/provider/omp-rpc-environment.ts`), which is the source of the backend's environment limits.
+
+### Adapter smoke
+
+Verified on 2026-11-25 by sourcing `bin/fm-backend.sh` and calling the adapter against the live daemon:
+
+| Call | Target | Result |
+| --- | --- | --- |
+| `fm_backend_agent_state paseo-agent <id>` | an archived scratch agent | `dead` |
+| `fm_backend_agent_state paseo-agent <id>` | an id the daemon never issued | `missing` |
+| `fm_backend_agent_state paseo-agent <id>` and `fm_backend_busy_state` | the live primary | `alive` and `idle` |
+| `fm_backend_kill paseo-agent <id>` | an already archived agent | exit 0 |
+| `fm_backend_runtime_check paseo-agent` | the running daemon | exit 0 |
+
+`shellcheck -x` and `bash -n` were clean on every changed script.
+
+### Model selection and host-follow
+
+Verified on 2026-11-25: `fm_backend_paseo_agent_model_selection` resolved models and thinking options against the live `paseo provider models omp --json` catalog.
+
+Host-follow negative case: a shell in a Paseo terminal tab descends from the desktop app's terminal worker, not the daemon, so `fm_backend_detect_host` rejected it even with a forged `PASEO_AGENT_ID`.
+The primary's omp process descends from the daemon worker, which is the positive ancestry the check requires.
+Positive host selection from a spawn the primary runs is not yet recorded.
+Orca host selection is not verified live, because Orca was not running on this host.
+
+### Hidden wake delivery for a Paseo-hosted primary
+
+Verified on 2026-11-25 with two scratch Firstmate homes, one running the extension before the change and one after it, each with a stand-in watcher arm and drain, on haiku-model omp agents.
+Paseo's web build ran on `127.0.0.1:6767` against the same daemon for the screenshots.
+Four screenshots in the private task evidence directory record the result:
+
+| Screenshot | Result |
+| --- | --- |
+| `01-before-wake-mid-run-folds-answer.png` | Before: a wake raised mid-run showed a visible operational-input bubble, and the primary's answer folded into the turn's "Ran 2 commands" summary, because the wake and the answer shared one turn id. |
+| `02-after-wake-mid-run-own-turn-hidden.png` | After: the answer stayed visible, and the wake ran in its own `autonomous-*` turn with no bubble. |
+| `03-after-idle-wake-starts-hidden-turn.png` | After: a wake to an idle agent started a hidden turn with no typing. |
+| `04-after-two-wakes-mid-run-one-hidden-turn.png` | After: two wakes raised in one run arrived as one hidden message, holding both wakes in full, and one turn. |
+
+A node unit check with a fake omp API confirmed that two wakes while streaming send nothing, that `agent_end` sends one hidden follow-up that triggers a turn, and that consumption leaves no replacement handoff.
+Paseo's projected timeline and live `paseo attach` stream showed only the assistant reply for a `display: false` custom message, and the model received its full content.
+
+`tests/fm-omp-harness.test.sh` passed all 11 extension cases when run outside omp ancestry (under `setsid` with `FM_OMP_HARNESS` unset).
+Run inside an omp worker, its decoy-name detection case fails because the real omp is an ancestor; that failure is environmental, not a defect in the extension.
+
+### Idle runtime cleanup
+
+Read on 2026-11-25 from the Paseo 0.17.4 server package (`@getpaseo/server` `dist/server/server`):
+
+- `config.js` resolves the setting as `persisted.agents?.idleRuntimeCleanup ?? true`, so `agents.idleRuntimeCleanup` in `~/.paseo/config.json` defaults on.
+- `agent/idle-runtime-cleanup/index.js` sets `IDLE_PERIOD_MS = 60 * 60000` and sweeps every 60 seconds.
+- A runtime is kept while its provider's `canStopRuntime` returns anything but `true`, or while a finish subscription or agent message is pending for it.
+- paseo-omp 5.8.2's `canStopRuntime` allows the stop once omp reports itself settled, with no pending async work, not streaming, and not compacting.
+
+### Not verified
+
+- A live end-to-end worker spawn from a Paseo-hosted primary, steer, done wake, and teardown is not yet recorded.
+- Positive host-follow selection of `paseo-agent` or `orca` from a real host session is not yet recorded.
+- Behaviour on macOS has not been exercised for this backend.
 
 ## Rex
 
