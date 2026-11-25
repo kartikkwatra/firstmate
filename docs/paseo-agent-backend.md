@@ -89,7 +89,7 @@ A model matches a catalog id exactly, or, unprefixed, the one id whose last path
 An effort must be one of that model's thinking options.
 An omitted model or effort leaves that choice to the provider.
 
-The session environment carries the exports a pane would receive: `GOTMPDIR`, `COMPACT_ADVISER_DISABLE`, `FM_TASK_INBOX`, `FM_OMP_HARNESS`, `OMP_SKIP_SETUP`, `FM_TASK_ID`, and, when configured, `LAVISH_AXI_HOST` and `TRACEPARENT`.
+The session environment carries the exports a pane would receive: `GOTMPDIR`, `COMPACT_ADVISER_DISABLE`, `FM_TASK_INBOX`, `FM_OMP_HARNESS`, `OMP_SKIP_SETUP`, `FM_TASK_ID`, `PLANNOTATOR_INBOX_TOOL=0` for every ship and scout but a design worker, and, when configured, `LAVISH_AXI_HOST` and `TRACEPARENT`.
 A spawn that fails after the agent starts archives that agent, archives the workspace, and returns the slot only when it holds no uncommitted work.
 A start whose outcome Paseo never reported touches nothing it may be working in, and the warning names the cleanup commands.
 

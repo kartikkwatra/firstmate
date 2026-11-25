@@ -120,13 +120,21 @@
 # restating the rule.
 # Every heredoc here stays outside a command substitution: `VAR=$(cat <<EOF ...)`
 # breaks parsing of the whole file on Bash 3.2 (tests/fm-brief.test.sh).
-# fm_brief_worker_role owns the ship/scout role scope. bin/fm-spawn.sh is its one
-# emitter, supplying it first in every ship/scout launch brief and never to a
-# secondmate charter. It names the one task-owned steering inbox without
-# relaxing isolation from every other home's endpoint namespace. Like
+# fm_brief_worker_role owns the ship/scout role scope, including the design
+# worker variant and which workers may use the Plannotator Inbox. bin/fm-spawn.sh
+# is its one emitter, supplying it first in every ship/scout launch brief and
+# never to a secondmate charter. It names the one task-owned steering inbox
+# without relaxing isolation from every other home's endpoint namespace. Like
 # fm_brief_intent_overlay it is a distinctly titled launch section that states
 # its own precedence, so a brief or project instruction that authors a
 # conflicting role is superseded rather than duplicated.
+# A design worker (role argument `design`) is the one worker that talks to the
+# captain, and only through the channel its brief's `# Design contract`
+# (bin/fm-brief.sh --design) names; every other ship or scout is told never to
+# use the Inbox, the fallback for any runtime where bin/fm-spawn.sh cannot
+# carry the PLANNOTATOR_INBOX_TOOL=0 switch into the agent's environment.
+# fm_brief_declares_design owns how a brief records that role, so bin/fm-spawn.sh
+# can refuse a brief and spawn that disagree about it.
 # The code root argument is the Firstmate checkout that holds
 # .agents/skills/firstmate-coding-guidelines/SKILL.md. A worker in a Firstmate
 # worktree loads that skill by name from its own checkout. A worker whose
@@ -149,14 +157,24 @@
 # shellcheck source=bin/fm-external-review-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-external-review-lib.sh"
 
-fm_brief_worker_role() {  # <state-dir> <task-id> <code-root>
-  local state=$1 task_id=$2 root=$3
+fm_brief_worker_role() {  # <state-dir> <task-id> <code-root> [design]
+  local state=$1 task_id=$2 root=$3 role=${4:-}
   cat <<'EOF'
 # Current worker role contract
 You are a crewmate: an autonomous worker agent managed by firstmate.
 This section establishes your current identity before every project or task instruction below and supersedes any conflicting role identity in those instructions.
-Do the assigned work yourself and report only to firstmate; do not adopt a firstmate or secondmate supervisor identity, delegate the task, run fleet supervision, or address the captain.
 EOF
+  if [ "$role" = design ]; then
+    cat <<'EOF'
+Do the assigned work yourself; do not adopt a firstmate or secondmate supervisor identity, delegate the task, or run fleet supervision.
+You are a design worker: you work through decisions directly with the captain, only through the Plannotator Inbox and Lavish pages exactly as your brief's `# Design contract` states, and you report only workflow state to firstmate, never the content of a question or decision.
+EOF
+  else
+    cat <<'EOF'
+Do the assigned work yourself and report only to firstmate; do not adopt a firstmate or secondmate supervisor identity, delegate the task, run fleet supervision, or address the captain.
+Never use the Plannotator Inbox - its `plannotator_inbox` tool, its MCP server, or the `plannotator` CLI - even when a reminder invites you to message the person there; anything for the captain goes to firstmate through your status file.
+EOF
+  fi
   printf "Your steering inbox is \`%s/%s.inbox\`; this exact path belongs to your current task even when it is outside the worktree or under the supervising firstmate home, so read and acknowledge its messages and do not reject it as another home's state.\n" "$state" "$task_id"
   cat <<'EOF'
 Never inspect or change any other home's endpoint namespace; this authorization is limited to the exact task paths named by this brief.
@@ -164,6 +182,17 @@ When this task works on Firstmate itself, the repository root `AGENTS.md` (also 
 Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
 EOF
   printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
+}
+
+# Return 0 when <brief> declares a design worker: bin/fm-brief.sh --design opens
+# its `# Design contract` section with the fixed line "Worker role: design".
+# Only that exact pair counts, so prose elsewhere that mentions the role does not.
+fm_brief_declares_design() {  # <brief>
+  awk '
+    contract && $0 == "Worker role: design" { found = 1; exit }
+    { contract = ($0 == "# Design contract") }
+    END { exit !found }
+  ' "$1"
 }
 
 # Return 0 when <mode> is one of the two publishing modes, whose Definition of

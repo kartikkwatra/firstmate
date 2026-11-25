@@ -155,6 +155,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/design-worker/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/diagnostic-reasoning/SKILL.md",
       "audience": "agent-runtime"
     },

@@ -14,13 +14,23 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--pr <auto|manual>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--design] [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--pr <auto|manual>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   It offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
 #   confirms the legacy board-compatibility floor; otherwise it asks for a text report.
+#   --design writes a design-worker brief: the ship contract (every ship input,
+#   --mode included, applies, and its branch delivers like any ship) whose
+#   deliverable is the captain's decisions recorded word for word in the
+#   project's docs/decisions.md. It replaces the ship rule that routes product
+#   choices through firstmate and adds a `# Design contract` section, opened by
+#   the fixed line "Worker role: design", that is the single statement of how a
+#   design worker asks the captain directly (Plannotator Inbox, Lavish pages),
+#   records decisions, and limits its status lines to workflow state.
+#   bin/fm-spawn.sh --design requires that line and every other spawn refuses it.
+#   Refused with --scout or --secondmate.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -218,6 +228,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 case "$CONFIG" in /*) ;; *) CONFIG="$PWD/$CONFIG" ;; esac
 KIND=ship
 HERDR_LAB=0
+DESIGN=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
@@ -258,6 +269,7 @@ for a in "$@"; do
   fi
   case "$a" in
     --scout) KIND=scout ;;
+    --design) DESIGN=1 ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
@@ -285,6 +297,14 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+
+# A design worker is a ship whose deliverable is the captain's recorded
+# decisions, so it takes the ship contract and every ship input; it cannot be a
+# scout or a charter.
+if [ "$DESIGN" -eq 1 ] && [ "$KIND" != ship ]; then
+  echo "error: --design scaffolds a ship-shaped design brief; it cannot combine with --scout or --secondmate" >&2
+  exit 1
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -777,6 +797,48 @@ esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CONSENT" "$PR_TEXT") || exit 1
 
+# The ship rule 6 hands product choices to firstmate. A design brief keeps the
+# ship contract but replaces that rule and adds the `# Design contract`, the one
+# place the design worker's captain channel is stated; bin/fm-dod-lib.sh's
+# fm_brief_worker_role points at it and fm_brief_declares_design reads its fixed
+# opening line, which bin/fm-spawn.sh --design requires.
+SCAFFOLD_KIND=ship
+DESIGN_SETUP=
+DESIGN_BLOCK=
+RULE6="6. If a decision belongs above the implementation worker (product choices, destructive actions),
+   append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision."
+if [ "$DESIGN" -eq 1 ]; then
+  SCAFFOLD_KIND=design
+  DESIGN_SETUP="
+This is a DESIGN task: the deliverable is the captain's decisions, recorded word for word in the project's \`docs/decisions.md\` on your branch, plus any Lavish pages that walk him through them.
+You never implement product code."
+  RULE6="6. Ask the captain product and design questions directly, as \`# Design contract\` says, never through firstmate.
+   A decision that is not the captain's design call - a destructive action, a delivery or workflow choice - still goes to firstmate:
+   append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision."
+  if "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
+    DESIGN_LAVISH="Arm it with \`$FM_ROOT/bin/fm-procevent-lavish.sh arm <artifact.html> --for $ID\` and never run \`lavish-axi poll\` yourself; board feedback reaches you through your steering inbox, so re-arm with your reply after each nonterminal round, and at session_ended or an empty End acknowledge that final round with \`$FM_ROOT/bin/fm-procevent.sh handled <source-id> <sequence>\` instead of re-arming."
+  else
+    DESIGN_LAVISH="Lavish is unavailable here (lavish-axi is missing or below its supported version floor), so put the walk-through in the Inbox message itself, with images or attachments."
+  fi
+  DESIGN_BLOCK="# Design contract
+Worker role: design
+You are the one kind of worker that talks to the captain directly; every exchange with him follows this section.
+1. Ask through the Plannotator Inbox with its \`plannotator_inbox\` tool, keeping one thread for this task.
+   Batch each round of questions into one \`send_message\` of \`:::question\` blocks, each with the short context he needs to answer it from his phone; images and attachments are allowed.
+   Never ask him in chat, and never ask through firstmate.
+2. For a long walk-through, build a phone-friendly scrolling Lavish page; use one question per screen only for a decision round.
+   $DESIGN_LAVISH
+   Announce the page in an Inbox message with its https tailnet link, never a loopback address or a file path.
+3. Record every decision word for word with its date (YYYY-MM-DD) in the project's \`docs/decisions.md\`, creating the file if it is absent, and commit it on your branch.
+   That file is the only record of the decisions; firstmate keeps only workflow state.
+4. Status lines about the captain carry workflow state only, never a question's or a decision's content.
+   When you send a round, append \`$PAUSED_VERB [at=<epoch>]: waiting on captain: <topic>\` and end your turn; his Inbox reply wakes this session.
+   When a topic's decisions are recorded and committed, append \`resolved [at=<epoch>]: settled: <topic>\`; the \`done:\` line under Definition of done marks the whole task settled.
+5. Never implement product code: your branch changes only \`docs/decisions.md\` and the design notes or artifacts the Firstmate spec names.
+
+"
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -785,7 +847,7 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
-$SETUP_BASE
+$SETUP_BASE$DESIGN_SETUP
 
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
@@ -814,8 +876,7 @@ $RULE1
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
 $CREWMATE_PAUSE_INSTRUCTIONS
 5. If you hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop; firstmate will help.
-6. If a decision belongs above the implementation worker (product choices, destructive actions),
-   append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision.
+$RULE6
 $ASK_USER_BLOCK
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
@@ -824,7 +885,7 @@ $SHARED_NO_CD_RULE
 
 $WAIT_BLOCK$INBOX_SECTION
 
-# Project memory
+$DESIGN_BLOCK# Project memory
 A project's \`AGENTS.md\` or \`CLAUDE.md\` is loaded into every agent session in that project, so edit it only to correct information that is factually wrong - including information your own change made wrong - and never to add knowledge because it is missing.
 A correction edits only the wrong text: do not run \`$FM_ROOT/bin/fm-ensure-agents-md.sh\`, create either file, or add sections, headings, or pointers alongside it.
 
@@ -832,11 +893,11 @@ $DOD
 EOF
 append_brief_include
 if [ "$PR_TEXT" = manual ]; then
-  echo "scaffolded: $BRIEF (ship, mode=$MODE pr=manual; replace {TASK} and {FIRSTMATE_SPEC})"
+  echo "scaffolded: $BRIEF ($SCAFFOLD_KIND, mode=$MODE pr=manual; replace {TASK} and {FIRSTMATE_SPEC})"
 elif [ "$FORGE" = none ]; then
-  echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK} and {FIRSTMATE_SPEC})"
+  echo "scaffolded: $BRIEF ($SCAFFOLD_KIND, mode=$MODE; replace {TASK} and {FIRSTMATE_SPEC})"
 elif [ "$FORGE" = gerrit ]; then
-  echo "scaffolded: $BRIEF (ship, mode=$MODE forge=$FORGE shape=$SHAPE; replace {TASK} and {FIRSTMATE_SPEC})"
+  echo "scaffolded: $BRIEF ($SCAFFOLD_KIND, mode=$MODE forge=$FORGE shape=$SHAPE; replace {TASK} and {FIRSTMATE_SPEC})"
 else
-  echo "scaffolded: $BRIEF (ship, mode=$MODE forge=$FORGE; replace {TASK} and {FIRSTMATE_SPEC})"
+  echo "scaffolded: $BRIEF ($SCAFFOLD_KIND, mode=$MODE forge=$FORGE; replace {TASK} and {FIRSTMATE_SPEC})"
 fi

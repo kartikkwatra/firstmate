@@ -546,6 +546,7 @@ test_spawn_leases_slot_opens_workspace_and_starts_agent_last() {
   assert_contains "$(pa_get ".agents[\"$agent\"].Env | join(\" \")")" "FM_TASK_INBOX=$STATE/$id.inbox" "the agent gets its steering inbox"
   assert_contains "$(pa_get ".agents[\"$agent\"].Env | join(\" \")")" "FM_TASK_ID=$id" "the agent gets its task id"
   assert_contains "$(pa_get ".agents[\"$agent\"].Env | join(\" \")")" "COMPACT_ADVISER_DISABLE=1" "the agent gets the compact-adviser kill switch"
+  assert_contains "$(pa_get ".agents[\"$agent\"].Env | join(\" \")")" "PLANNOTATOR_INBOX_TOOL=0" "a ship agent starts with the Plannotator Inbox tool off"
   assert_not_contains "$(pa_get ".agents[\"$agent\"].Env | join(\" \")")" "GIT_CONFIG" "no Git config override rides the Paseo environment"
   assert_contains "$(pa_get ".agents[\"$agent\"].Prompt")" "FIRSTMATE_OP: v1 launch-brief:" "the first message is the encoded launch brief"
   assert_contains "$(pa_get ".agents[\"$agent\"].Prompt")" "Verify the paseo-agent lifecycle behavior under test." "the first message carries the brief body"
@@ -615,6 +616,7 @@ test_control_interrupt_exit_and_relaunch() {
   assert_equals "$wks" "$(pa_get ".agents[\"$second\"].Workspace")" "the new agent starts in the recorded workspace"
   assert_equals 1 "$(pa_get '.workspaces | length')" "relaunch opens no second workspace"
   assert_contains "$(pa_get ".agents[\"$second\"].Prompt")" "FIRSTMATE_OP: v1 launch-brief:" "the new agent starts from the brief"
+  assert_contains "$(pa_get ".agents[\"$second\"].Env | join(\" \")")" "PLANNOTATOR_INBOX_TOOL=0" "the relaunched scout still starts with the Plannotator Inbox tool off"
   pass "fm-control.sh backend=paseo-agent: interrupt stops the turn, exit archives the agent, relaunch starts a new agent in the same workspace"
 }
 
@@ -642,6 +644,33 @@ test_scout_teardown_archives_agent_and_workspace_before_slot_return() {
   [ "$(pa_call_line '^treehouse return')" -gt "$(pa_call_line '^workspace archive')" ] || fail "the slot returns only after the workspace is archived"
   assert_absent "$STATE/$id.meta" "teardown removes the task record"
   pass "fm-teardown.sh backend=paseo-agent: archives the agent, then its workspace, then returns the slot"
+}
+
+# A design worker is the one task worker that keeps the Plannotator Inbox: its
+# Paseo agent starts without the kill switch every ship and scout carries, its
+# record keeps the role, and a relaunch reads the role back from that record.
+test_design_worker_keeps_the_plannotator_inbox() {
+  local id out rc first second
+  id=$(pa_uid padesign)
+  pa_task_case design "$id"
+  printf '\n# Design contract\nWorker role: design\nAsk the captain directly.\n' >> "$DATA/$id/brief.md"
+  out=$(pa_spawn "$id" omp --mode local-only --yolo off --design --backend paseo-agent)
+  expect_code 0 $? "design spawn"$'\n'"$out"
+  assert_contains "$out" "role=design" "the spawn summary names the design role"
+  assert_equals design "$(pa_meta "$id" role)" "the task record keeps the design role"
+  first=$(pa_meta "$id" paseo_agent_id)
+  assert_not_contains "$(pa_get ".agents[\"$first\"].Env | join(\" \")")" "PLANNOTATOR_INBOX_TOOL" "a design worker keeps its Inbox tool"
+  assert_contains "$(pa_get ".agents[\"$first\"].Prompt")" "You are a design worker" "the design worker's role contract replaces the never-address-the-captain rule"
+  out=$(pa_control "$id" exit); rc=$?
+  expect_code 0 "$rc" "exit the design worker"$'\n'"$out"
+  out=$(pa_control "$id" relaunch --note "fresh context"); rc=$?
+  expect_code 0 "$rc" "relaunch the design worker"$'\n'"$out"
+  second=$(pa_meta "$id" paseo_agent_id)
+  assert_not_equals "$first" "$second" "relaunch starts a new agent"
+  assert_equals design "$(pa_meta "$id" role)" "relaunch keeps the design role"
+  assert_not_contains "$(pa_get ".agents[\"$second\"].Env | join(\" \")")" "PLANNOTATOR_INBOX_TOOL" "the relaunched design worker keeps its Inbox tool"
+  assert_contains "$(pa_get ".agents[\"$second\"].Prompt")" "You are a design worker" "the relaunched worker keeps the design role contract"
+  pass "fm-spawn.sh --design backend=paseo-agent: the design worker keeps the Inbox across a relaunch while ships and scouts lose it"
 }
 
 test_spawn_refuses_what_paseo_cannot_honor() {
@@ -700,5 +729,6 @@ fm_test_run \
   test_control_lib_tables \
   test_control_interrupt_exit_and_relaunch \
   test_scout_teardown_archives_agent_and_workspace_before_slot_return \
+  test_design_worker_keeps_the_plannotator_inbox \
   test_spawn_refuses_what_paseo_cannot_honor \
   test_refused_agent_start_returns_lease_and_lost_start_keeps_it

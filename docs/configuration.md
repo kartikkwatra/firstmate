@@ -1961,6 +1961,20 @@ This applies only to agents Firstmate launches; the captain's own primary Firstm
 
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) and [`tests/fm-spawn-compact-adviser-disable-remote.test.sh`](../tests/fm-spawn-compact-adviser-disable-remote.test.sh).
 
+### Plannotator Inbox for workers
+
+Only a design worker and the firstmate primary may reach the captain through the Plannotator Inbox.
+Every ship and scout Firstmate launches starts with `PLANNOTATOR_INBOX_TOOL=0` in its agent's environment, on a fresh spawn and on a relaunch alike, which the Plannotator host plugins (the Claude Code plugin, the Pi extension that omp also loads, and OpenCode) read at session start to withhold the `plannotator_inbox` tool and its reminder.
+A design worker (`bin/fm-spawn.sh --design`) and a secondmate keep their ambient environment, so whether they get the tool is this machine's Plannotator configuration.
+
+The variable reaches the agent process on every pane backend, including launches filtered by `config/launch-env-allowlist`, and on `paseo-agent` through the agent's session environment.
+On `t3code` it is written to a Claude worker's settings environment, and reaches only the shell of a Codex worker, which has no Plannotator host plugin.
+An Inbox reached through the `plannotator inbox mcp` server rather than a host plugin is not gated by the variable on any backend.
+Wherever the variable cannot reach, the never-use-the-Inbox line in every ship and scout's role contract ([`bin/fm-dod-lib.sh`](../bin/fm-dod-lib.sh)'s `fm_brief_worker_role`) is the remaining guard.
+
+Firstmate provides no configuration or flag to change this.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with regression coverage in [`tests/fm-spawn-plannotator-inbox.test.sh`](../tests/fm-spawn-plannotator-inbox.test.sh) and [`tests/fm-backend-paseo-agent.test.sh`](../tests/fm-backend-paseo-agent.test.sh), and [the Paseo agents verification](verification/runtime-backends.md#paseo-agents) records the live omp result.
+
 ### Commit attribution
 
 The optional local, gitignored `config/keep-ai-trailers` presence flag opts this home into keeping AI co-author trailers on its launched workers.

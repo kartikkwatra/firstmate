@@ -25,7 +25,9 @@
 # "Paseo agents" owns the dated evidence):
 #   1. `paseo run --no-wait --json --workspace <wks>` creates the agent in that
 #      workspace's directory even when the caller is itself an agent, and
-#      returns {agentId, status}. `--env K=V` reaches the agent's shell.
+#      returns {agentId, status}. `--env K=V` reaches the agent's shell and,
+#      for omp, the omp process's own environment, which its extensions read
+#      at session start (how PLANNOTATOR_INBOX_TOOL=0 withholds the Inbox).
 #   2. `paseo inspect <id> --json` reports Status (initializing, idle, running,
 #      error, closed), Archived, and PendingPermissions; an unknown id exits 1
 #      with error.code AGENT_NOT_FOUND in the JSON error it prints on stderr.

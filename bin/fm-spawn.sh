@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--design] [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -355,6 +355,19 @@
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
+#   --design launches a design worker: a ship in every respect (--mode and --yolo
+#   required, branch delivered and landed like any ship) that also records
+#   role=design in the task's meta and prints role=design on the success line. The
+#   brief must be a bin/fm-brief.sh --design brief (bin/fm-dod-lib.sh's
+#   fm_brief_declares_design), every other spawn refuses one, and --relaunch keeps
+#   the recorded role. Every ship and scout except a design worker launches with
+#   PLANNOTATOR_INBOX_TOOL=0 in its agent's environment, so the Plannotator host
+#   plugins withhold the Inbox tool: through the pane launch command, the T3 Code
+#   harness config (Claude's settings env; Codex's shell environment only), and
+#   the Paseo agent's session environment. A design worker and a secondmate keep
+#   their ambient environment. fm_brief_worker_role's role contract tells every
+#   other worker never to use the Inbox, which covers a runtime the variable
+#   cannot reach.
 #   Before a secondmate launch, the home is fast-forwarded to the primary's
 #   default-branch commit when safe: directly for a local home, or through the
 #   configured host for a remote home. Skipped syncs warn and launch unchanged.
@@ -756,7 +769,7 @@
 # keeps no data/backlog.md. A configured non-markdown adapter remains
 # active without a markdown file; any active automatic backend without
 # compatible tasks-axi refuses before creating lifecycle state.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [account=<entry> [account_provider=<provider>]] [role=design]
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
@@ -1019,6 +1032,10 @@ fm_refuse_if_gate_agent
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
 KIND_SET=0
+# The design worker role (bin/fm-brief.sh --design): a ship whose worker asks
+# the captain directly. Empty for every other spawn.
+WORKER_ROLE=
+DESIGN_SET=0
 HARNESS_ARG=
 MODEL=
 EFFORT=
@@ -1121,6 +1138,10 @@ for a in "$@"; do
     KIND=scout
     KIND_SET=1
     ;;
+  --design)
+    WORKER_ROLE=design
+    DESIGN_SET=1
+    ;;
   --secondmate)
     KIND=secondmate
     KIND_SET=1
@@ -1205,6 +1226,12 @@ done
   echo "error: --hermes-profile requires a non-empty value" >&2
   exit 1
 }
+# A design worker is a ship (bin/fm-brief.sh --design): every ship input,
+# --mode and --yolo included, applies to it, and it cannot be a scout or a mate.
+if [ "$DESIGN_SET" -eq 1 ] && [ "$KIND" != ship ]; then
+  echo "error: --design spawns a ship-shaped design worker; it cannot combine with --scout or --secondmate" >&2
+  exit 1
+fi
 if [ "$KIND" = secondmate ] && [ "$HERMES_PROFILE_SET" = 1 ]; then
   echo 'error: --hermes-profile is for crewmate/scout launches, never a secondmate' >&2
   exit 1
@@ -1273,8 +1300,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2
     exit 1
   }
-  [ "$KIND_SET" -eq 0 ] || {
-    echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2
+  [ "$KIND_SET" -eq 0 ] && [ "$DESIGN_SET" -eq 0 ] || {
+    echo "error: --relaunch reuses the task's recorded kind and role; --scout/--design/--secondmate cannot override it" >&2
     exit 1
   }
   [ "$MODE_SET" -eq 0 ] || {
@@ -2262,6 +2289,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$BASE_BRANCH_SET" -eq 0 ] || shared_args+=(--base-branch "$BASE_BRANCH")
   [ "$HERDR_RESUME_LOCK_WAIT" -eq 0 ] || shared_args+=(--herdr-resume-lock-wait)
   [ "$ACCOUNT_SET" -eq 0 ] || shared_args+=(--account "$ACCOUNT_ARG")
+  [ "$DESIGN_SET" -eq 0 ] || shared_args+=(--design)
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -2675,6 +2703,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
   UPSTREAM_CONSENT=$(fm_meta_get "$RELAUNCH_META" upstream_consent)
+  WORKER_ROLE=$(fm_meta_get "$RELAUNCH_META" role)
   if [ "$KIND" = ship ]; then
     BRANCH=$(fm_meta_get "$RELAUNCH_META" branch)
     [ -n "$BRANCH" ] || BRANCH="fm/$ID"
@@ -4479,6 +4508,18 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
     echo "error: $BRIEF ## Captain's intent has an operator-address line: $ADDRESS_LINE; write the captain's actual words without a Captain label or address before spawn, since the heading already records provenance" >&2
     exit 1
   fi
+  # The worker role is stated by the brief and by the spawn; they must agree,
+  # or a design brief would launch without the Inbox it is told to use, or a
+  # ship brief would launch with it.
+  if [ "$WORKER_ROLE" = design ]; then
+    fm_brief_declares_design "$BRIEF" || {
+      echo "error: $BRIEF is not a design brief (no '# Design contract' opening with 'Worker role: design'); scaffold it with bin/fm-brief.sh --design, or spawn without --design" >&2
+      exit 1
+    }
+  elif fm_brief_declares_design "$BRIEF"; then
+    echo "error: $BRIEF declares a design worker; spawn it with --design (a $KIND spawn never launches the design contract)" >&2
+    exit 1
+  fi
   if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
     if fm_brief_task_heading_present "$BRIEF" "## Captain's intent"; then
       CAPTAIN_INTENT=$(fm_brief_task_heading_body "$BRIEF" "## Captain's intent")
@@ -4514,7 +4555,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   BRIEF="$DATA/$ID/launch-brief.md"
   BRIEF_TMP="$DATA/$ID/.launch-brief.md.${BASHPID:-$$}"
   {
-    fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" &&
+    fm_brief_worker_role "$STATE" "$ID" "$FM_ROOT" "$WORKER_ROLE" &&
       printf '\n' &&
       cat "$SOURCE_BRIEF" &&
       if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
@@ -7545,6 +7586,18 @@ else
   fi
 fi
 
+# The Plannotator Inbox kill switch. Every ship and scout launches with
+# PLANNOTATOR_INBOX_TOOL=0 in its agent's environment, which the Plannotator
+# host plugins (the Claude Code mod, Pi and omp, OpenCode) read once at session
+# start to withhold the `plannotator_inbox` tool and its reminder, so only a
+# design worker and the firstmate primary can reach the captain there. A
+# secondmate is a firstmate and keeps its ambient environment. Each backend
+# channel below carries it: the pane launch command, the T3 harness config, and
+# the Paseo agent's session environment. fm_brief_worker_role's never-use-the-
+# Inbox line is the fallback where a harness offers the Inbox another way.
+PLANNOTATOR_INBOX_OFF=0
+case "$KIND" in ship | scout) [ "$WORKER_ROLE" = design ] || PLANNOTATOR_INBOX_OFF=1 ;; esac
+
 # A Paseo agent exists only together with its first message, so it starts here:
 # after every fact its launch brief and session environment carry exists, and
 # just before the record naming it is published (spawn_abort_cleanup archives it
@@ -7559,6 +7612,7 @@ spawn_paseo_agent_start() {
     "FM_TASK_INBOX=$STATE_REAL/$ID.inbox" FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1)
   [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" != 1 ] || env+=("LAVISH_AXI_HOST=$LAVISH_AXI_HOST")
   case "$KIND" in ship | scout) env+=("FM_TASK_ID=$ID") ;; esac
+  [ "$PLANNOTATOR_INBOX_OFF" != 1 ] || env+=(PLANNOTATOR_INBOX_TOOL=0)
   [ -z "$SPAWN_TRACEPARENT" ] || env+=("TRACEPARENT=$SPAWN_TRACEPARENT")
   provider=${PASEO_AGENT_SELECTION%%$'\t'*}
   thinking=${PASEO_AGENT_SELECTION#*$'\t'}
@@ -7613,7 +7667,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness hermes_profile hermes_home kind mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id paseo_agent_id paseo_agent_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id hc_session hc_terminal home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
+      split("window endpoint_task_id worktree project harness hermes_profile hermes_home kind role mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id paseo_agent_id paseo_agent_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id hc_session hc_terminal home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -7632,6 +7686,7 @@ preserve_relaunch_meta() {
     esac
   fi
   echo "kind=$KIND"
+  [ -z "$WORKER_ROLE" ] || echo "role=$WORKER_ROLE"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   [ -z "${BRANCH:-}" ] || echo "branch=$BRANCH"
@@ -8137,6 +8192,9 @@ fi
 # launch and the launch-env-allowlist `env -i` wrapper.
 LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
+# The Plannotator Inbox kill switch (PLANNOTATOR_INBOX_OFF above), carried the
+# same way so a cleared allowlist environment cannot drop it.
+[ "$PLANNOTATOR_INBOX_OFF" != 1 ] || LAUNCH="export PLANNOTATOR_INBOX_TOOL=0; $LAUNCH"
 # When the live-harness gate has exported DISABLE_AUTOUPDATER into this spawn's
 # own environment, carry it into the launch command text so Claude Code's
 # auto-updater cannot rewrite the shared binary during a live run. Embedding the
@@ -8193,6 +8251,7 @@ if [ "$BACKEND" = t3code ]; then
   if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
     T3CODE_ENV+=("FM_TASK_ID=$ID" "FM_HOME=$FM_HOME")
   fi
+  [ "$PLANNOTATOR_INBOX_OFF" != 1 ] || T3CODE_ENV+=(PLANNOTATOR_INBOX_TOOL=0)
   if [ -n "$SPAWN_TRACEPARENT" ] && spawn_record_traceparent; then
     T3CODE_ENV+=("TRACEPARENT=$SPAWN_TRACEPARENT")
   fi
@@ -8623,4 +8682,6 @@ SPAWN_ACCOUNT=
 # Opt-in Herdr project groups (docs/herdr-backend.md "Project groups") tag the
 # new endpoint now rather than at the next watcher poll; off costs one file test.
 [ ! -e "$CONFIG/herdr-project-groups" ] || [ "$BACKEND" != herdr ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-herdr-groups.sh" sync "$ID" || true
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT"
+SPAWN_ROLE=
+[ -z "$WORKER_ROLE" ] || SPAWN_ROLE=" role=$WORKER_ROLE"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_ACCOUNT$SPAWN_ROLE"

@@ -365,10 +365,11 @@ Independently, the fleet lifecycle entrypoints use `bin/fm-gate-refuse-lib.sh` t
 A normal primary checkout or crewmate worktree remains unaffected.
 The refusal library's header owns the gate detection, lab-home exception, test-harness bypass, and relationship to no-mistakes' HEAD-continuity guard; the lab helper's header owns its usage.
 
-## Two task shapes
+## Task shapes
 
 Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
-The intake and authority contract in `AGENTS.md` owns when separate scout research is warranted.
+A design task is a ship whose worker asks the captain directly through the Plannotator Inbox and records his decisions in the project's `docs/decisions.md`; it is the only worker that may reach the captain, so `bin/fm-spawn.sh` withholds the Inbox tool from every other ship and scout.
+The intake and authority contract in `AGENTS.md` owns when separate scout research or a design worker is warranted.
 
 ## Dispatch profiles
 

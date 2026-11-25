@@ -2649,10 +2649,31 @@ Read on 2026-11-25 from the Paseo 0.17.4 server package (`@getpaseo/server` `dis
 - A runtime is kept while its provider's `canStopRuntime` returns anything but `true`, or while a finish subscription or agent message is pending for it.
 - paseo-omp 5.8.2's `canStopRuntime` allows the stop once omp reports itself settled, with no pending async work, not streaming, and not compacting.
 
+### Plannotator Inbox switch
+
+Verified on 2026-11-25 with Paseo 0.17.4, omp 19.1.1, and the Plannotator Pi extension 0.29.4 (loaded by omp), whose `~/.plannotator/config.json` turns the Inbox tool on for the `pi` host.
+A scratch Firstmate home with a scratch project spawned, from a Paseo-hosted omp agent, one scout and one design worker on haiku at low effort:
+
+```sh
+fm-spawn.sh probe-scout <project> omp --scout --model anthropic/claude-haiku-5-5 --effort low --backend paseo-agent
+fm-spawn.sh probe-design <project> omp --mode local-only --yolo off --design --model anthropic/claude-haiku-5-5 --effort low --backend paseo-agent
+```
+
+| Check | Scout | Design worker |
+| --- | --- | --- |
+| Spawn line | `kind=scout` | `kind=ship mode=local-only yolo=off ... role=design` |
+| `PLANNOTATOR_INBOX_TOOL` in the omp process's `/proc/<pid>/environ` | `0` | absent |
+| `plannotator-inbox-reminder` entry in the omp session file, which the extension writes only where it registered the tool | absent | present |
+| `plannotator_inbox --help` asked of the agent | refused, citing its role contract's never-use-the-Inbox line | printed the tool's usage |
+
+The firstmate primary's omp process carried no `PLANNOTATOR_INBOX_TOOL`, so a spawn never changes the primary's Inbox access.
+Both agents were then archived by `fm-teardown.sh` and the scratch Paseo project deleted.
+
 ### Not verified
 
 - Orca host-follow from a live Orca session is not recorded.
 - Behaviour on macOS has not been exercised for this backend.
+- The Plannotator Inbox switch has been exercised live only on this backend with omp; pane backends and T3 Code are covered by the portable tests alone.
 
 ## Rex
 

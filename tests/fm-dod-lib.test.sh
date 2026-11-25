@@ -721,6 +721,27 @@ test_worker_role_names_skill_and_fallback_file() {
   pass "worker role names the skill and its fallback skill file"
 }
 
+# Only a design worker may reach the captain, and only through the Plannotator
+# Inbox its brief's design contract names; every other ship or scout is told
+# never to use the Inbox, the fallback wherever the spawn's environment switch
+# cannot reach the harness.
+test_worker_role_gates_the_plannotator_inbox() {
+  local role_file
+  role_file="$TMP_ROOT/worker-role-default.txt"
+  fm_brief_worker_role "$TMP_ROOT/state" ship-1 "$ROOT" >"$role_file"
+  assert_grep 'Never use the Plannotator Inbox' "$role_file" "a ship or scout role must forbid the Inbox"
+  assert_grep 'report only to firstmate' "$role_file" "a ship or scout role must report only to firstmate"
+  assert_grep 'or address the captain.' "$role_file" "a ship or scout role must forbid addressing the captain"
+  role_file="$TMP_ROOT/worker-role-design.txt"
+  fm_brief_worker_role "$TMP_ROOT/state" design-1 "$ROOT" design >"$role_file"
+  assert_grep 'You are a design worker' "$role_file" "the design role must name the design worker"
+  assert_grep "your brief's \`# Design contract\`" "$role_file" "the design role must defer to the brief's design contract"
+  assert_no_grep 'Never use the Plannotator Inbox' "$role_file" "the design role must not forbid the Inbox"
+  assert_no_grep 'address the captain' "$role_file" "the design role must not forbid addressing the captain"
+  assert_grep "$TMP_ROOT/state/design-1.inbox" "$role_file" "the design role keeps the task's steering inbox"
+  pass "worker role: ships and scouts never use the Inbox; a design worker defers to its design contract"
+}
+
 # forge=external: a review tool uploads its own snapshot, so nothing is pushed.
 # The fixtures name an invented tool and an RFC 6761 reserved host only.
 EXT_CFG="$TMP_ROOT/external-config"
@@ -831,5 +852,6 @@ test_external_review_done_without_backup_is_accepted_on_the_url
 test_external_review_done_with_backup_needs_the_copy
 
 test_worker_role_names_skill_and_fallback_file
+test_worker_role_gates_the_plannotator_inbox
 
 echo "all fm-dod-lib tests passed"

@@ -1192,6 +1192,72 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# A design brief is the ship contract plus the design worker's captain channel:
+# the mode-shaped Definition of done, a replaced rule 6, and a `# Design
+# contract` opened by the fixed role line bin/fm-spawn.sh --design requires.
+test_design_scaffold() {
+  local brief out rc case_dir fakebin base label version expect
+  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-design-q6 alpha --mode local-only --design >/dev/null 2>&1 \
+    || fail "fm-brief.sh design scaffold exited non-zero"
+  brief="$BRIEF_HOME/data/brief-design-q6/brief.md"
+  assert_present "$brief" "design brief was not scaffolded"
+  assert_grep "This is a DESIGN task" "$brief" "design brief must declare itself a design task"
+  assert_grep 'Delivery contract: mode=local-only' "$brief" "design brief must carry the ship delivery contract"
+  assert_grep '# Design contract' "$brief" "design brief missing its design contract"
+  assert_grep 'Worker role: design' "$brief" "design brief missing the role line the spawn requires"
+  bash -c '. "$1/bin/fm-dod-lib.sh"; fm_brief_declares_design "$2"' _ "$ROOT" "$brief" \
+    || fail "fm_brief_declares_design must recognize a scaffolded design brief"
+  assert_grep 'plannotator_inbox' "$brief" "design contract must name the Inbox tool"
+  assert_grep ':::question' "$brief" "design contract must batch questions as :::question blocks"
+  assert_grep 'docs/decisions.md' "$brief" "design contract must name the decisions file"
+  assert_grep 'paused [at=<epoch>]: waiting on captain: <topic>' "$brief" "design contract must name the waiting status line"
+  assert_grep 'resolved [at=<epoch>]: settled: <topic>' "$brief" "design contract must name the settled status line"
+  assert_grep 'Never implement product code' "$brief" "design contract must forbid product code"
+  assert_grep '6. Ask the captain product and design questions directly' "$brief" "design brief must replace the ship decision rule"
+  assert_no_grep 'If a decision belongs above the implementation worker' "$brief" "design brief kept the ship rule that routes product choices through firstmate"
+
+  FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-ship-q6 alpha --mode local-only >/dev/null 2>&1 \
+    || fail "fm-brief.sh ship scaffold exited non-zero"
+  brief="$BRIEF_HOME/data/brief-ship-q6/brief.md"
+  assert_no_grep '# Design contract' "$brief" "a plain ship brief must not carry the design contract"
+  assert_grep 'If a decision belongs above the implementation worker' "$brief" "a plain ship brief keeps its decision rule"
+  bash -c '. "$1/bin/fm-dod-lib.sh"; fm_brief_declares_design "$2"' _ "$ROOT" "$brief" \
+    && fail "fm_brief_declares_design must not recognize a plain ship brief"
+
+  for flag in --scout '--secondmate alpha'; do
+    # shellcheck disable=SC2086 # The secondmate case passes its project as a second word.
+    out=$(FM_HOME="$BRIEF_HOME" FM_SECONDMATE_CHARTER=x "$ROOT/bin/fm-brief.sh" brief-design-bad alpha --design $flag 2>&1); rc=$?
+    [ "$rc" -ne 0 ] || fail "--design with $flag must be refused"
+    assert_contains "$out" "cannot combine with --scout or --secondmate" "--design with $flag refusal names the conflict"
+  done
+  out=$(FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-design-nomode alpha --design 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "--design without --mode must be refused"
+  assert_contains "$out" "ship briefs require --mode" "a design brief needs a delivery mode like any ship"
+
+  base=$(fm_test_base_path_sans "${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" lavish-axi)
+  while IFS='^' read -r label version expect; do
+    [ -n "$label" ] || continue
+    case_dir="$TMP_ROOT/design-lavish-$version"
+    mkdir -p "$case_dir/home/data"
+    fakebin=$(fm_fakebin "$case_dir")
+    [ "$version" = absent ] || fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION "$version"
+    PATH="$fakebin:$base" FM_HOME="$case_dir/home" \
+      "$ROOT/bin/fm-brief.sh" design-lavish alpha --mode local-only --design >/dev/null \
+      || fail "$label: design scaffold failed"
+    brief="$case_dir/home/data/design-lavish/brief.md"
+    if [ "$expect" = hosting ]; then
+      assert_grep 'fm-procevent-lavish.sh arm <artifact.html> --for design-lavish' "$brief" "$label: design brief did not arm the Lavish page"
+    else
+      assert_grep 'Lavish is unavailable here' "$brief" "$label: design brief did not fall back to the Inbox message"
+      assert_no_grep 'fm-procevent-lavish.sh arm' "$brief" "$label: design brief offered a below-floor Lavish"
+    fi
+  done <<'ROWS'
+lavish-axi at the board compatibility floor^0.1.77^hosting
+absent lavish-axi^absent^text
+ROWS
+  pass "fm-brief: --design scaffolds the ship contract with the design captain channel and is ship-only"
+}
+
 # Contract: the inbox listing the brief tells a worker to run succeeds silently
 # on an empty or absent inbox and lists messages in numeric order, in bash and zsh.
 test_inbox_listing_command_is_safe_on_empty_inbox() {
@@ -1719,6 +1785,7 @@ test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_completion_write_exception_is_task_scoped
 test_scout_and_secondmate_scaffold
+test_design_scaffold
 test_scout_lavish_line_follows_presentation_floor
 test_inbox_listing_command_is_safe_on_empty_inbox
 test_workers_wait_without_spending_turns
