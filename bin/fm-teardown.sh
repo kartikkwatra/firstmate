@@ -1291,11 +1291,14 @@ fi
 # be readable before the first destructive step. --force does not override
 # this. A forced descendant is proved in validate_firstmate_home_children_removal.
 teardown_require_backend_prerequisites "$BACKEND" "$ID" || exit 1
-# The T3 capability and identity gate must pass before local teardown mutation,
-# even under --force.
+# The T3 and Paseo capability and identity gates must pass before local
+# teardown mutation, even under --force.
 if [ "$BACKEND" = t3code ]; then
   fm_backend_runtime_check t3code || exit 1
   [ "$TEARDOWN_META_KIND" != secondmate ] || t3code_secondmate_lsof_check "$ID" "$(fm_meta_get "$META" home)" || exit 1
+fi
+if [ "$BACKEND" = paseo-agent ]; then
+  fm_backend_runtime_check paseo-agent || exit 1
 fi
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
   "$FM_ROOT/bin/fm-guard.sh" || true
@@ -3615,6 +3618,11 @@ cleanup_firstmate_home_children() {
         ( unset FM_ROOT_OVERRIDE; FM_HOME="$child_rex_home" FM_ROOT="$child_rex_home" STATE="$child_rex_home/state" \
           fm_backend_kill "$child_backend" "$child_t" "" "fm-$child_id" ) \
           || { endpoint_close_refusal "child $child_id" "$child_backend" "$child_t" 0; return 1; }
+      elif [ "$child_backend" = paseo-agent ]; then
+        fm_backend_kill "$child_backend" "$child_t" \
+          || { endpoint_close_refusal "child $child_id" "$child_backend" "$child_t" 0; return 1; }
+        fm_backend_paseo_agent_workspace_retire "$(meta_value "$child_meta" paseo_agent_workspace_id)" "$child_wt" \
+          || { endpoint_close_refusal "child $child_id" "$child_backend" "$(meta_value "$child_meta" paseo_agent_workspace_id)" 0; return 1; }
       else
         fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" \
           || { endpoint_close_refusal "child $child_id" "$child_backend" "$child_t" 0; return 1; }
@@ -4085,6 +4093,22 @@ if [ "$BACKEND" = t3code ]; then
     endpoint_close_refusal "$ID" t3code "$T" 0 || exit 1
   }
 fi
+# A Paseo agent is archived (proven) BEFORE its slot goes back to the pool, for
+# the same reason: a live agent would keep working in a copy another task may
+# take. Its task workspace goes next, so the sidebar entry never points at a
+# returned slot; archiving a local workspace never touches the directory. Both
+# steps are idempotent, so a re-run after a failed return converges.
+if [ "$BACKEND" = paseo-agent ]; then
+  fm_backend_kill paseo-agent "$T" || {
+    echo "error: could not stop and archive Paseo agent $T for $ID; open the Paseo app (or archive the agent there) and re-run teardown" >&2
+    endpoint_close_refusal "$ID" paseo-agent "$T" 0 || exit 1
+  }
+  PASEO_AGENT_WORKSPACE_ID=$(fm_meta_get "$META" paseo_agent_workspace_id)
+  fm_backend_paseo_agent_workspace_retire "$PASEO_AGENT_WORKSPACE_ID" "$WT" || {
+    echo "error: could not archive Paseo workspace $PASEO_AGENT_WORKSPACE_ID for $ID; archive it in Paseo and re-run teardown" >&2
+    endpoint_close_refusal "$ID" paseo-agent "$PASEO_AGENT_WORKSPACE_ID" 0 || exit 1
+  }
+fi
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -4156,7 +4180,7 @@ if [ "$BACKEND" = rex ] && [ "$KIND" = secondmate ] && [ "$TEARDOWN_WINDOWLESS" 
   ( unset FM_ROOT_OVERRIDE; FM_HOME="$HOME_PATH" FM_ROOT="$HOME_PATH" STATE="$HOME_PATH/state" \
     fm_backend_kill "$BACKEND" "$T" "" "fm-$ID" ) \
     || endpoint_close_refusal "$ID" "$BACKEND" "$T" 1 || exit 1
-elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != herdr ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
+elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != paseo-agent ] && [ "$BACKEND" != herdr ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
   # Undo Firstmate's own opt-in Rex attention mark, progress, and tint first
   # (bin/fm-rex-marks.sh), so a pane the close cannot reach is not left showing
   # a stale request. A task with no cached record costs nothing.

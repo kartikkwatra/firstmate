@@ -99,13 +99,52 @@ fm_backend_paseo_agent_validate_harness() {  # <harness>
   esac
 }
 
-# fm_backend_paseo_agent_provider <harness> <model>: the `--provider` value for
-# `paseo run`, provider/model when a model was chosen.
-fm_backend_paseo_agent_provider() {  # <harness> <model>
-  case "${2:-default}" in
-    ''|default) printf '%s' "$1" ;;
-    *) printf '%s/%s' "$1" "$2" ;;
-  esac
+# fm_backend_paseo_agent_model_selection <harness> <model> <effort>: the
+# `--provider` and `--thinking` values for `paseo run`, tab-separated, resolved
+# against the provider's own catalog (`paseo provider models <harness>`). A
+# model matches a catalog id exactly or, unprefixed, the one id whose last
+# path segment it is; an effort must be one of that model's thinking options.
+# default leaves either choice to the provider, which then checks an effort
+# against its own default model when the agent starts.
+fm_backend_paseo_agent_model_selection() {  # <harness> <model> <effort>
+  local harness=$1 model=${2:-default} effort=${3:-default} list id matches options
+  [ "$model" != default ] || model=
+  [ "$effort" != default ] || effort=
+  if [ -z "$model" ]; then
+    printf '%s\t%s' "$harness" "$effort"
+    return 0
+  fi
+  list=$(fm_backend_paseo_cli_json provider models "$harness" --json) || return 1
+  printf '%s' "$list" | jq -e 'type == "array"' >/dev/null 2>&1 || {
+    echo "error: 'paseo provider models $harness' returned no model list" >&2
+    return 1
+  }
+  id=$(printf '%s' "$list" | jq -r --arg m "$model" '[.[] | select(.id == $m) | .id] | .[0] // empty')
+  if [ -z "$id" ]; then
+    matches=$(printf '%s' "$list" | jq -r --arg m "$model" '.[] | select((.id | split("/") | last) == $m) | .id')
+    case "$(printf '%s' "$matches" | grep -c .)" in
+      1) id=$matches ;;
+      0)
+        echo "error: Paseo's $harness provider lists no model '$model'; choose one of: $(printf '%s' "$list" | jq -r '[.[].id] | join(", ")')" >&2
+        return 1
+        ;;
+      *)
+        echo "error: model '$model' matches several of Paseo's $harness models ($(printf '%s' "$matches" | paste -sd, -)); pass the full id" >&2
+        return 1
+        ;;
+    esac
+  fi
+  if [ -n "$effort" ]; then
+    options=$(printf '%s' "$list" | jq -r --arg id "$id" '.[] | select(.id == $id) | (.thinkingOptionIds // []) | join(" ")')
+    case " $options " in
+      *" $effort "*) ;;
+      *)
+        echo "error: Paseo's $harness model $id has no thinking option '$effort'; it offers: ${options:-none}" >&2
+        return 1
+        ;;
+    esac
+  fi
+  printf '%s/%s\t%s' "$harness" "$id" "$effort"
 }
 
 # fm_backend_paseo_agent_labels: the label arguments every Firstmate worker
@@ -148,22 +187,42 @@ fm_backend_paseo_agent_workspace_create() {  # <project-id> <worktree> <title>
   esac
 }
 
+# fm_backend_paseo_agent_workspace_state <workspace-id> <worktree>: whether the
+# task's own workspace is still active on its recorded worktree. Prints
+# active, absent (archived or never known), or elsewhere (active on another
+# directory); exit 1 when the inventory is unreadable.
+fm_backend_paseo_agent_workspace_state() {  # <workspace-id> <worktree>
+  local wks=$1 wt=$2 list cwd real
+  list=$(fm_backend_paseo_cli_json workspace ls --background --json) || return 1
+  printf '%s' "$list" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
+  cwd=$(printf '%s' "$list" | jq -r --arg id "$wks" '.[] | select(.workspaceId == $id) | .cwd' | head -1)
+  if [ -z "$cwd" ]; then
+    printf absent
+    return 0
+  fi
+  real=$(cd "$wt" 2>/dev/null && pwd -P) || real=$wt
+  if [ "$cwd" = "$wt" ] || [ "$cwd" = "$real" ]; then
+    printf active
+  else
+    printf elsewhere
+  fi
+}
+
 # fm_backend_paseo_agent_workspace_retire <workspace-id> <worktree>: archive the
 # task's own workspace once its agent is archived. Only a live workspace whose
 # directory is the recorded worktree is archived; an absent one is already the
 # end state. Archiving a local workspace never touches its directory.
 fm_backend_paseo_agent_workspace_retire() {  # <workspace-id> <worktree>
-  local wks=$1 wt=$2 list cwd real
+  local wks=$1 wt=$2 state
   [ -n "$wks" ] || return 0
-  list=$(fm_backend_paseo_cli_json workspace ls --background --json) || return 1
-  printf '%s' "$list" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
-  cwd=$(printf '%s' "$list" | jq -r --arg id "$wks" '.[] | select(.workspaceId == $id) | .cwd' | head -1)
-  [ -n "$cwd" ] || return 0
-  real=$(cd "$wt" 2>/dev/null && pwd -P) || real=$wt
-  if [ "$cwd" != "$wt" ] && [ "$cwd" != "$real" ]; then
-    echo "error: Paseo workspace $wks points at $cwd, not the task worktree $wt; leaving it in place" >&2
-    return 1
-  fi
+  state=$(fm_backend_paseo_agent_workspace_state "$wks" "$wt") || return 1
+  case "$state" in
+    absent) return 0 ;;
+    elsewhere)
+      echo "error: Paseo workspace $wks points at another directory, not the task worktree $wt; leaving it in place" >&2
+      return 1
+      ;;
+  esac
   fm_backend_paseo_cli_json workspace archive "$wks" --json >/dev/null
 }
 
@@ -184,19 +243,18 @@ fm_backend_paseo_agent_error_code() {  # <err-file>
   sed -n 's/.*"code": *"\([A-Z_][A-Z_]*\)".*/\1/p' "$1" 2>/dev/null | head -1
 }
 
-# fm_backend_paseo_agent_create <workspace-id> <title> <harness> <model> <effort>
-#   <id> <kind> <prompt-file> [NAME=VALUE...]: start the worker as a Paseo agent in
-# the task's workspace with the launch brief as its first message. Echoes the
-# agent id. Exit 1 when Paseo refused before creating anything, 2 when the
-# outcome is unknown (the call failed after it may have created the agent).
+# fm_backend_paseo_agent_create <workspace-id> <title> <provider> <thinking>
+#   <id> <kind> <prompt-file> [NAME=VALUE...]: start the worker as a Paseo agent
+# in the task's workspace with the launch brief as its first message, at the
+# provider's full-access mode. <provider> and <thinking> come from
+# fm_backend_paseo_agent_model_selection. Echoes the agent id. Exit 1 when
+# Paseo refused before creating anything, 2 when the outcome is unknown (the
+# call failed after it may have created the agent).
 fm_backend_paseo_agent_create() {
-  local wks=$1 title=$2 harness=$3 model=$4 effort=$5 id=$6 kind=$7 prompt_file=$8 out agent pair
-  shift 8
-  local -a args=(run --no-wait --json --workspace "$wks" --provider "$(fm_backend_paseo_agent_provider "$harness" "$model")" --mode full --title "$title")
-  case "${effort:-default}" in
-    ''|default) ;;
-    *) args+=(--thinking "$effort") ;;
-  esac
+  local wks=$1 title=$2 provider=$3 thinking=$4 id=$5 kind=$6 prompt_file=$7 out agent pair
+  shift 7
+  local -a args=(run --no-wait --json --workspace "$wks" --provider "$provider" --mode full --title "$title")
+  [ -z "$thinking" ] || args+=(--thinking "$thinking")
   while IFS= read -r pair; do args+=("$pair"); done < <(fm_backend_paseo_agent_label_args "$id" "$kind")
   for pair in "$@"; do args+=(--env "$pair"); done
   [ -r "$prompt_file" ] || { echo "error: launch brief $prompt_file is not readable" >&2; return 1; }
@@ -311,19 +369,26 @@ fm_backend_paseo_agent_capture() {  # <agent-id> <lines>
 # fm_backend_paseo_agent_send_text_submit: one `paseo send` with steer
 # behaviour, which starts an idle agent's turn or joins the running one. The
 # text rides a private file, never argv, so option-shaped or long text is
-# delivered verbatim. Echoes empty (Paseo reported it sent) or send-failed.
+# delivered verbatim. Echoes empty (Paseo reported it sent), send-failed
+# (Paseo refused it with a typed error, or nothing was sent), or unconfirmed
+# (the call failed without Paseo's answer, so it may have landed).
 fm_backend_paseo_agent_send_text_submit() {  # <agent-id> <text> [retries enter-sleep settle label]
-  local agent=$1 text=$2 file out status
+  local agent=$1 text=$2 file err out rc=0
   file=$(umask 077 && mktemp "${TMPDIR:-/tmp}/fm-paseo-agent-send.XXXXXX") || { printf 'send-failed'; return 0; }
   printf '%s' "$text" > "$file" || { rm -f "$file"; printf 'send-failed'; return 0; }
-  out=$(fm_backend_paseo_cli_json send "$agent" --prompt-file "$file" --behavior steer --no-wait --json)
-  status=$?
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-paseo-agent-err.XXXXXX") || { rm -f "$file"; printf 'send-failed'; return 0; }
+  out=$(fm_backend_paseo_agent_call "$err" send "$agent" --prompt-file "$file" --behavior steer --no-wait --json) || rc=$?
   rm -f "$file"
-  if [ "$status" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null)" = sent ]; then
+  if [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null)" = sent ]; then
     printf 'empty'
+  elif [ "$rc" -ne 0 ] && [ -z "$(fm_backend_paseo_agent_error_code "$err")" ]; then
+    cat "$err" >&2
+    printf 'unconfirmed'
   else
+    cat "$err" >&2
     printf 'send-failed'
   fi
+  rm -f "$err"
 }
 
 # fm_backend_paseo_agent_native_interrupt <id>: stop the running turn and print

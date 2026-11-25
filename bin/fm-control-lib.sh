@@ -337,16 +337,17 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 # normalizes Enter, Ctrl+C, and the Ctrl+U composer clear. Orca names only an
 # interrupt and an Enter of its own, but its `terminal send --text` writes
 # bytes to the pty verbatim, so Escape and Ctrl+U ride their control bytes
-# (bin/backends/orca.sh's fm_backend_orca_send_key). T3 has no composer
-# to clear, so Ctrl+U has nothing to do there; Escape and Ctrl+C are both a
-# turn interrupt (bin/backends/t3code.sh's fm_backend_t3code_send_key).
+# (bin/backends/orca.sh's fm_backend_orca_send_key). T3 and Paseo agents have
+# no composer to clear, so Ctrl+U has nothing to do there; Escape and Ctrl+C
+# are both a turn interrupt (bin/backends/t3code.sh's fm_backend_t3code_send_key,
+# bin/backends/paseo-agent.sh's fm_backend_paseo_agent_send_key).
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
     tmux|herdr|zellij|cmux|paseo|rex|tern|hc|orca)
       case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
       ;;
-    t3code)
+    t3code|paseo-agent)
       case "$key" in Escape|Enter|C-c) return 0 ;; esac
       ;;
   esac
@@ -354,14 +355,15 @@ fm_control_backend_supports_key() {  # <backend> <key>
 }
 
 # Whether <backend> has a recovery-grade agent-state classifier. tmux, herdr,
-# rex, and t3code implement fm_backend_agent_state; zellij, orca, cmux, and paseo report
+# rex, t3code, and paseo-agent implement fm_backend_agent_state; zellij, orca,
+# cmux, and paseo report
 # `unverified`, and tern's `tern process` classifier answers for display but is
 # not promoted to this list, so no reading of theirs can prove an agent stopped.
 # The control plane refuses a stop-proving verb there instead of reporting an
 # unprovable transition as success.
 fm_control_backend_state_verified() {  # <backend>
   case "${1-}" in
-    tmux|herdr|rex|t3code) return 0 ;;
+    tmux|herdr|rex|t3code|paseo-agent) return 0 ;;
   esac
   return 1
 }
@@ -385,11 +387,14 @@ fm_control_backend_exit_supported() {  # <backend>
 # nightlies refused a driver change outright), never the fresh agent a
 # relaunch promises. So t3code has no replacement to launch and a relaunch
 # is refused before anything is stopped (docs/t3code-backend.md "Active
-# limits"). zellij, orca, cmux, and paseo never reach this table: they fail
-# fm_control_backend_state_verified first.
+# limits"). A paseo-agent relaunch starts a NEW Paseo agent in the task's
+# recorded workspace once the old one is archived, and the record rebinds to
+# it (bin/fm-spawn.sh's spawn_paseo_agent_start). zellij, orca, cmux, and
+# paseo never reach this table: they fail fm_control_backend_state_verified
+# first.
 fm_control_backend_relaunch_supported() {  # <backend>
   case "${1-}" in
-    tmux|herdr|rex) return 0 ;;
+    tmux|herdr|rex|paseo-agent) return 0 ;;
   esac
   return 1
 }
@@ -451,6 +456,9 @@ fm_control_absence_recheck_applies() {  # <backend> <raw-state>
 #     on the verified server, while an unreachable server reads `unreadable`.
 #     The proof re-reads the thread, but exit and relaunch refuse before it:
 #     V2 has no session stop and a thread cannot host a replacement.
+#   paseo-agent CAN prove it: `missing` is the running daemon's own typed
+#     AGENT_NOT_FOUND for an id it never reuses, and an unreachable daemon
+#     reads `unreadable` instead. The proof re-reads the agent.
 #   tmux CANNOT. `list-windows -a` describes only the server the CURRENT
 #     process addresses (its TMUX_TMPDIR/socket), and a task's record does not
 #     carry the endpoint's socket identity - so a different but running server
@@ -497,6 +505,14 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target> [meta]
         alive) printf 'alive\t' ;;
         missing) printf 'gone\t' ;;
         *) printf 'unproven\tthe T3 server could not be reached to re-read thread %s' "$target" ;;
+      esac
+      ;;
+    paseo-agent)
+      case "$(fm_backend_paseo_agent_agent_state "$target")" in
+        dead) printf 'dead\t' ;;
+        alive) printf 'alive\t' ;;
+        missing) printf 'gone\t' ;;
+        *) printf 'unproven\tthe Paseo daemon could not be reached to re-read agent %s' "$target" ;;
       esac
       ;;
     *)

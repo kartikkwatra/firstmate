@@ -60,15 +60,15 @@
 #                    unknown invalidation fm-control writes after a Devin interrupt
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, rex-native, t3code-native, tern-native, grok-regex, rovo-regex, agy-regex, muse-session-log,
+#   endpoint-gone, herdr-native, rex-native, t3code-native, paseo-agent-native, tern-native, grok-regex, rovo-regex, agy-regex, muse-session-log,
 #   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
 #   kimi-unverified, codex-unverified, capture-failed, no-target, launch-prompt
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
 # with the producing source as the second token. Precedence:
 #   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
-#   2. a t3code task: the T3 server's busy, idle, or unknown verdict
-#      (the provider reports it for claude and codex alike, and no
+#   2. a t3code or paseo-agent task: the T3 server's or Paseo daemon's busy,
+#      idle, or unknown verdict (each reports its own session status, and no
 #      shell sits in front of the agent)
 #   3. standalone Kimi before verification       -> unknown kimi-unverified
 #   4. a valid, gen-matching, source-trusted record -> its state and source,
@@ -1131,18 +1131,22 @@ fm_busy_launch_prompt_parked() {  # <harness>
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
   local out rc r_state r_source native log
-  # t3code first: the T3 server reports the session status for claude and
-  # codex alike. Native uncertainty must not fall through to a stale idle
-  # record or a harness-specific fallback.
-  if [ "$backend" = t3code ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
-    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
-    case "$native" in
-      busy|idle|unknown)
-        printf '%s t3code-native' "$native"
-        return 0
-        ;;
-    esac
-  fi
+  # t3code and paseo-agent first: the T3 server or Paseo daemon reports the
+  # session status itself. Native uncertainty must not fall through to a stale
+  # idle record or a harness-specific fallback.
+  case "$backend" in
+    t3code | paseo-agent)
+      if command -v fm_backend_busy_state >/dev/null 2>&1; then
+        native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+        case "$native" in
+          busy|idle|unknown)
+            printf '%s %s-native' "$native" "$backend"
+            return 0
+            ;;
+        esac
+      fi
+      ;;
+  esac
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
@@ -1331,14 +1335,14 @@ fm_busy_classify_meta() {  # <meta-file> <id> <state-dir> [tail40]
   fm_busy_classify "$backend" "$target" "$harness" "$id" "$state" "$tail40"
 }
 
-# fm_busy_is_busy: boolean activity guard. T3 native uncertainty returns 0
-# to defer delivery until idle is proven. Other unknown sources, idle, and
-# dead return 1.
+# fm_busy_is_busy: boolean activity guard. T3 and Paseo native uncertainty
+# returns 0 to defer delivery until idle is proven. Other unknown sources,
+# idle, and dead return 1.
 fm_busy_is_busy() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local verdict
   verdict=$(fm_busy_classify "$@")
   case "$verdict" in
-    busy\ *|unknown\ t3code-native) return 0 ;;
+    busy\ *|unknown\ t3code-native|unknown\ paseo-agent-native) return 0 ;;
     *) return 1 ;;
   esac
 }

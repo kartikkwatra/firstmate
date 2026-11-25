@@ -602,16 +602,19 @@ inbox_steer_escalate_unavailable() {  # <window> <task> <record>
 }
 
 # inbox_steer_busy: the steering-inbox delivery guard. Every backend keeps the
-# recorded task's busy verdict (window_is_busy). T3 Code alone also treats its
-# native uncertainty as busy (fm_busy_is_busy), so a doorbell waits for proven
-# idle; pane staleness elsewhere still needs busy proof.
+# recorded task's busy verdict (window_is_busy). T3 Code and Paseo agents also
+# treat their native uncertainty as busy (fm_busy_is_busy), so a doorbell waits
+# for proven idle; pane staleness elsewhere still needs busy proof.
 inbox_steer_busy() {  # <window> <backend> <task> <tail40>
   local w=$1 backend=$2 task=$3 tail40=$4
-  if [ "$backend" = t3code ]; then
-    fm_busy_is_busy t3code "$w" "$(window_harness "$w")" "$task" "$STATE" "$tail40"
-  else
-    window_is_busy "$w" "$tail40"
-  fi
+  case "$backend" in
+    t3code | paseo-agent)
+      fm_busy_is_busy "$backend" "$w" "$(window_harness "$w")" "$task" "$STATE" "$tail40"
+      ;;
+    *)
+      window_is_busy "$w" "$tail40"
+      ;;
+  esac
 }
 
 # Steering-inbox loss detection, one cheap check per recorded window per poll.
@@ -3618,7 +3621,7 @@ heartbeat_scan_finds_actionable() {
 # a second watcher, so every guard/beacon/arm/turn-end mechanism is unchanged.
 event_wait_or_sleep() {
   local w b session first_backend="" first_session="" rec rc
-  local windows=() t3_windows=()
+  local windows=() t3_windows=() paseo_agent_windows=()
   while IFS= read -r w; do
     b=$(window_backend "$w")
     fm_backend_has_push "$b" || continue
@@ -3627,12 +3630,19 @@ event_wait_or_sleep() {
     # they are excluded from the fast escalation exactly as the stale loop skips
     # them.
     [ "$(window_kind "$w")" = secondmate ] && continue
-    # T3 Code's bounded wait runs only when no other push backend is recorded,
-    # so adding a T3 task to a herdr home never takes herdr's fast path away.
-    if [ "$b" = t3code ]; then
-      t3_windows+=("$w")
-      continue
-    fi
+    # T3 Code's and Paseo's bounded waits run only when no other push backend
+    # is recorded (T3 first), so adding such a task to a herdr home never takes
+    # herdr's fast path away.
+    case "$b" in
+      t3code)
+        t3_windows+=("$w")
+        continue
+        ;;
+      paseo-agent)
+        paseo_agent_windows+=("$w")
+        continue
+        ;;
+    esac
     session=${w%%:*}
     if [ -z "$first_backend" ]; then first_backend=$b; first_session=$session; fi
     # One socket connection covers one backend+session; a home normally has a
@@ -3647,6 +3657,10 @@ event_wait_or_sleep() {
     first_backend=t3code
     first_session=$(fm_backend_event_session t3code "${t3_windows[0]}")
     windows=("${t3_windows[@]}")
+  elif [ "${#windows[@]}" -eq 0 ] && [ "${#paseo_agent_windows[@]}" -gt 0 ]; then
+    first_backend=paseo-agent
+    first_session=$(fm_backend_event_session paseo-agent "${paseo_agent_windows[0]}")
+    windows=("${paseo_agent_windows[@]}")
   fi
 
   if [ "${#windows[@]}" -eq 0 ]; then

@@ -483,13 +483,15 @@ fm_backend_detect_host() {
   printf '%s' "$FM_BACKEND_HOST_DETECTED"
 }
 
-# fm_backend_resolve: resolve the ACTIVE backend for a NEW spawn into
+# fm_backend_resolve [--no-host]: resolve the ACTIVE backend for a NEW spawn into
 # FM_BACKEND_RESOLVED, absent an explicit per-task override. Precedence:
 # FM_BACKEND env, then the session's own host (fm_backend_detect_host: a
 # Firstmate running inside a Paseo agent spawns Paseo agents, one inside Orca
 # spawns Orca workers), then config/backend (a single word on its first
 # non-empty line, mirroring config/crew-harness), then runtime auto-detection
-# (fm_backend_detect), then default tmux. A per-task `--backend` flag is
+# (fm_backend_detect), then default tmux. --no-host skips the host step, for a
+# --secondmate spawn, which neither host backend supports. A per-task
+# `--backend` flag is
 # parsed by the caller (fm-spawn.sh) and takes precedence over this
 # resolution entirely; it is not read here. A host selection that differs from
 # config/backend prints a notice naming both, so the configured value is
@@ -509,14 +511,15 @@ fm_backend_detect_host() {
 # The terminal-tab paseo adapter and tern are never auto-detected, so they only
 # ever come out of this function from FM_BACKEND or config/backend.
 fm_backend_resolve() {
-  local marker toolchain configured
+  local marker toolchain configured use_host=1
+  [ "${1:-}" != --no-host ] || use_host=0
   FM_BACKEND_DETECTED=""
   FM_BACKEND_DETECT_SIGNAL=""
   if [ -n "${FM_BACKEND:-}" ]; then
     FM_BACKEND_RESOLVED=$FM_BACKEND
     return 0
   fi
-  if fm_backend_detect_host >/dev/null; then
+  if [ "$use_host" = 1 ] && fm_backend_detect_host >/dev/null; then
     FM_BACKEND_RESOLVED=$FM_BACKEND_HOST_DETECTED
     FM_BACKEND_DETECTED=$FM_BACKEND_HOST_DETECTED
     FM_BACKEND_DETECT_SIGNAL=$FM_BACKEND_HOST_SIGNAL

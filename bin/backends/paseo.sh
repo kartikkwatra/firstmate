@@ -106,11 +106,17 @@ FM_BACKEND_PASEO_MIN_MINOR=8
 # fm_backend_paseo_bin: resolve the paseo CLI binary. Paseo's desktop app
 # bundles the CLI at Contents/Resources/bin/paseo and an "install to PATH"
 # action is not guaranteed to have run, so prefer PATH (respects an
-# operator's own setup), then the well-known bundle path.
+# operator's own setup), then the CLI the running app names in PASEO_CLI for
+# every process it starts (the Linux AppImage mounts its bundle at a path that
+# changes per launch), then the well-known macOS bundle path.
 FM_BACKEND_PASEO_BUNDLE_BIN="${FM_BACKEND_PASEO_BUNDLE_BIN:-/Applications/Paseo.app/Contents/Resources/bin/paseo}"
 fm_backend_paseo_bin() {
   if command -v paseo >/dev/null 2>&1; then
     printf 'paseo'
+    return 0
+  fi
+  if [ -n "${PASEO_CLI:-}" ] && [ -x "$PASEO_CLI" ]; then
+    printf '%s' "$PASEO_CLI"
     return 0
   fi
   if [ -x "$FM_BACKEND_PASEO_BUNDLE_BIN" ]; then
@@ -122,7 +128,7 @@ fm_backend_paseo_bin() {
 
 fm_backend_paseo_tool_check() {
   fm_backend_paseo_bin >/dev/null 2>&1 || {
-    echo "error: backend=paseo selected but the 'paseo' CLI was not found on PATH or at $FM_BACKEND_PASEO_BUNDLE_BIN (https://paseo.sh)" >&2
+    echo "error: backend=paseo selected but the 'paseo' CLI was not found on PATH, at \$PASEO_CLI, or at $FM_BACKEND_PASEO_BUNDLE_BIN (https://paseo.sh)" >&2
     return 1
   }
   command -v jq >/dev/null 2>&1 || {

@@ -58,6 +58,9 @@
 #              Refused on t3code before anything is sent: T3's `/mcp` tools
 #              have no session stop (bin/fm-control-lib.sh
 #              fm_control_backend_exit_supported); interrupt ends its turn.
+#              On paseo-agent the stop is Paseo's archive of the agent (no
+#              composer receives an exit command), proven by the agent reading
+#              back archived; the workspace and worktree stay for a relaunch.
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME worktree - and the same endpoint whenever that endpoint
 #              still exists - on the same or a newly chosen
@@ -97,7 +100,9 @@
 #              Refused on t3code before anything is stopped: a T3 thread
 #              keeps its conversation, so a new turn or a provider change on
 #              it continues the same agent rather than a fresh one
-#              (fm_control_backend_relaunch_supported).
+#              (fm_control_backend_relaunch_supported). On paseo-agent the
+#              replacement is a new Paseo agent in the task's recorded
+#              workspace, and the record rebinds to it.
 #              --note is required for a ship or scout, whose replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
@@ -135,10 +140,10 @@
 #   - A backend that cannot deliver the harness's interrupt key is refused
 #     rather than sent a substitute key.
 #   - `exit` and `relaunch` require a backend with a recovery-grade agent-state
-#     classifier (tmux, herdr, rex, or t3code), because without one the "the
-#     agent stopped" postcondition cannot be proven. Relaunch also requires
-#     replacement support, which t3code lacks. zellij, orca, cmux, paseo, and tern are
-#     refused rather than reported as successful blind.
+#     classifier (tmux, herdr, rex, t3code, or paseo-agent), because without
+#     one the "the agent stopped" postcondition cannot be proven. Relaunch also
+#     requires replacement support, which t3code lacks. zellij, orca, cmux,
+#     paseo, and tern are refused rather than reported as successful blind.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts (a Rex `unreadable` first goes through the absence
 #     proof `exit` describes, and refuses unless that proof settles it).
@@ -407,8 +412,8 @@ fm_control_harness_supported "$HARNESS" \
 FM_COMPOSER_HARNESS=$HARNESS
 
 fm_backend_validate "$BACKEND" || exit 1
-if [ "$BACKEND" = t3code ]; then
-  fm_backend_runtime_check t3code || exit 1
+if [ "$BACKEND" = t3code ] || [ "$BACKEND" = paseo-agent ]; then
+  fm_backend_runtime_check "$BACKEND" || exit 1
 fi
 
 # --- shared helpers ---------------------------------------------------------
@@ -602,9 +607,16 @@ deliver_interrupt() {
   if [ "$HARNESS" = devin ]; then
     devin_gen=$(fm_busy_current_gen "$STATE" "$ID" 2>/dev/null || true)
   fi
-  # T3 Code has no keys: its native interrupt confirms the run's end itself.
+  # T3 Code and Paseo agents have no keys: their native interrupt confirms the
+  # run's end itself.
   if [ "$BACKEND" = t3code ]; then
     cancel=$(fm_backend_t3code_native_interrupt "$T") \
+      || die "interrupt was not delivered to task $ID on $BACKEND"
+    printf '%s' "${cancel:-unconfirmed}"
+    return 0
+  fi
+  if [ "$BACKEND" = paseo-agent ]; then
+    cancel=$(fm_backend_paseo_agent_native_interrupt "$T") \
       || die "interrupt was not delivered to task $ID on $BACKEND"
     printf '%s' "${cancel:-unconfirmed}"
     return 0
@@ -760,6 +772,18 @@ do_exit() {
       esac
       ;;
   esac
+  # A Paseo agent has no composer for the harness exit command. Its stop is
+  # Paseo's archive, which also ends a running turn; the postcondition is the
+  # same agent-state read every other backend's exit proves.
+  if [ "$BACKEND" = paseo-agent ]; then
+    fm_backend_paseo_agent_native_exit "$T" \
+      || die "the Paseo archive for task $ID's agent $T did not read back archived"
+    state=$(wait_agent_state "$EXIT_WAIT" dead) \
+      || die "exit-delivered $ID exit=paseo-archive agent-state=$state exit=unconfirmed; the agent did not read back stopped within ${EXIT_WAIT}s"
+    retire_busy_incarnation
+    printf 'stopped'
+    return 0
+  fi
   # A busy agent is interrupted first before the exit command is submitted.
   case "$(busy_verdict)" in
     busy*)

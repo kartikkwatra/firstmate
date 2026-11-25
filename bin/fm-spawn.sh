@@ -124,29 +124,36 @@
 #   but omitted.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
-#   is authorized). Without it, the script resolves FM_BACKEND, then
-#   config/backend, then runtime auto-detection from the runtime firstmate's
+#   is authorized). Without it, the script resolves FM_BACKEND, then the host
+#   the launching firstmate itself runs in (a Paseo agent selects paseo-agent,
+#   an Orca chat or terminal selects orca; bin/fm-backend.sh's
+#   fm_backend_detect_host), then config/backend, then runtime auto-detection
+#   from the runtime firstmate's
 #   environment: $TMUX, HERDR_ENV=1, TERM_PROGRAM=rex with REX_BLOCK, cmux
 #   runtime signals, or the Herdr app signals (via
 #   bin/fm-backend.sh's fm_backend_detect, with cmux fallback details in
 #   docs/cmux-backend.md and the app signals in docs/hc-backend.md),
-#   then tmux.
+#   then tmux. A host-selected backend records its signal in meta's
+#   backend_detect= line, and an explicit --backend that differs from the
+#   detected host prints a notice naming both.
 #   Spawn-capable backends are the reference tmux adapter, verified herdr
-#   adapter, and experimental zellij, orca, cmux, paseo, rex, t3code, tern,
-#   and hc adapters. Orca owns both the task worktree and terminal, so ship/scout Orca
+#   adapter, and experimental zellij, orca, cmux, paseo, paseo-agent, rex,
+#   t3code, tern, and hc adapters. Orca owns both the task worktree and
+#   terminal, so ship/scout Orca
 #   spawns do not run treehouse get; cmux, paseo, rex, tern, and hc are session
 #   providers only, exactly like herdr/zellij, so they do. Auto-detected herdr
 #   and rex stay silent like tmux; auto-detected cmux and Herdr-app-driven hc
-#   print a loud stderr notice; zellij, orca, paseo, t3code, and tern are never
+#   print a loud stderr notice; zellij, paseo, t3code, and tern are never
 #   auto-detected (the paseo and tern markers, like bare hc markers, leak into
-#   every descendant process). An app-detected hc also records its signal in
-#   meta's backend_detect= line.
+#   every descendant process), and orca and paseo-agent are selected only as
+#   the launching session's verified host. An app-detected hc also records its
+#   signal in meta's backend_detect= line.
 #   Herdr leases its slot durably (treehouse get --lease) and moves the pane's
 #   top-level shell into it, because a restart restores that shell's cwd.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
-#   absent backend= means tmux. Orca, cmux, paseo, tern, and hc do not support
-#   --secondmate spawns.
+#   absent backend= means tmux. Orca, cmux, paseo, paseo-agent, tern, and hc do
+#   not support --secondmate spawns.
 #   A rex crewmate or scout opens one tab in the Rex session the launching
 #   firstmate runs in when it runs directly inside Rex, otherwise in its home's
 #   own Rex session; a --secondmate launch opens its tab in that secondmate
@@ -157,6 +164,15 @@
 #   endpoint instead of typing into a pane; only claude and codex harnesses.
 #   The exports a pane would receive before launch travel as per-directory
 #   harness config instead (spawn_t3code_env_install).
+#   paseo-agent is experimental (docs/paseo-agent-backend.md): the worker is a
+#   native Paseo agent in Paseo's own chat UI. The spawn leases a treehouse
+#   slot durably, opens a local Paseo workspace on it, and starts the agent
+#   there with the encoded launch brief as its first message; the exports a
+#   pane would receive travel as the agent's session environment. Paseo's
+#   provider starts the harness itself and refuses GIT_CONFIG_* session
+#   variables, so only the omp harness runs, a forge=external ship (whose push
+#   guard rides core.hooksPath) is refused, and the AI-trailer strip hooks
+#   are not delivered (a warning names it).
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
@@ -1700,6 +1716,15 @@ T3CODE_CREATE_UNCERTAIN=0
 T3CODE_LAUNCH_UNCONFIRMED=0
 T3CODE_PROJECT_ID=
 T3CODE_MODEL_SELECTION=
+PASEO_AGENT_ID=
+PASEO_AGENT_WORKSPACE_ID=
+PASEO_AGENT_PRIOR_ID=
+PASEO_AGENT_LEASED=0
+PASEO_AGENT_WORKSPACE_OPENED=0
+PASEO_AGENT_CREATE_UNCERTAIN=0
+PASEO_AGENT_ABORT_CLEANUP=0
+PASEO_AGENT_PROJECT_ID=
+PASEO_AGENT_SELECTION=
 HERDR_LEASED=0
 HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
@@ -1918,6 +1943,52 @@ spawn_abort_cleanup() {
       (cd "$PROJ_ABS" && treehouse return --force "$WT") >/dev/null 2>&1 \
         || echo "warning: could not return the leased worktree $WT for $ID; run 'treehouse return --force $WT' from $PROJ_ABS" >&2
     fi
+  fi
+  # A Paseo agent starts on its launch brief the moment Paseo creates it, so
+  # an abort before the record owns it stops and archives it first; its copy
+  # is handed back only once that archive is proven and the copy holds no
+  # uncommitted work, otherwise the copy stays leased for the operator. An
+  # unproven create may have left an agent whose id never came back, so then
+  # nothing it could be working in is touched. The workspace is archived only
+  # when no agent can still be running in it; archiving a local workspace never
+  # touches its directory.
+  if [ "$PASEO_AGENT_CREATE_UNCERTAIN" = 1 ]; then
+    PASEO_AGENT_CREATE_UNCERTAIN=0
+    PASEO_AGENT_WORKSPACE_OPENED=0
+    if [ "$PASEO_AGENT_LEASED" = 1 ]; then
+      PASEO_AGENT_LEASED=0
+      echo "warning: the Paseo agent start for $ID did not report an outcome; archive any agent it left ('paseo ls -a -g --label fm-task=$ID', then 'paseo archive --force <id>'), archive workspace $PASEO_AGENT_WORKSPACE_ID, then run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+    else
+      echo "warning: the Paseo agent start for $ID did not report an outcome; archive any agent it left ('paseo ls -a -g --label fm-task=$ID', then 'paseo archive --force <id>')" >&2
+    fi
+  elif [ "$PASEO_AGENT_ABORT_CLEANUP" = 1 ]; then
+    PASEO_AGENT_ABORT_CLEANUP=0
+    if ! fm_backend_kill paseo-agent "$PASEO_AGENT_ID"; then
+      PASEO_AGENT_WORKSPACE_OPENED=0
+      if [ "$PASEO_AGENT_LEASED" = 1 ]; then
+        PASEO_AGENT_LEASED=0
+        echo "warning: could not stop and archive Paseo agent $PASEO_AGENT_ID for $ID, so the leased worktree $WT stays leased; archive the agent ('paseo archive --force $PASEO_AGENT_ID') and workspace $PASEO_AGENT_WORKSPACE_ID, then run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+      else
+        echo "warning: could not stop and archive Paseo agent $PASEO_AGENT_ID for $ID; archive it with 'paseo archive --force $PASEO_AGENT_ID'" >&2
+      fi
+    elif [ "$PASEO_AGENT_LEASED" = 1 ]; then
+      local paseo_slot_status
+      paseo_slot_status=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null) || paseo_slot_status=unreadable
+      if [ -n "$paseo_slot_status" ]; then
+        PASEO_AGENT_LEASED=0
+        echo "warning: Paseo agent $PASEO_AGENT_ID for $ID ran before the spawn failed, and its worktree $WT may hold its work, so it stays leased; once inspected, run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+      fi
+    fi
+  fi
+  if [ "$PASEO_AGENT_WORKSPACE_OPENED" = 1 ]; then
+    PASEO_AGENT_WORKSPACE_OPENED=0
+    fm_backend_paseo_agent_workspace_retire "$PASEO_AGENT_WORKSPACE_ID" "$WT" \
+      || echo "warning: could not archive Paseo workspace $PASEO_AGENT_WORKSPACE_ID after the failed spawn of $ID; archive it in Paseo" >&2
+  fi
+  if [ "$PASEO_AGENT_LEASED" = 1 ] && [ -n "${WT:-}" ]; then
+    PASEO_AGENT_LEASED=0
+    (cd "$PROJ_ABS" && treehouse return --force "$WT") >/dev/null 2>&1 \
+      || echo "warning: could not return the leased worktree $WT for $ID; run 'treehouse return --force $WT' from $PROJ_ABS" >&2
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
@@ -2381,8 +2452,10 @@ if [ "$KIND" = secondmate ]; then
   [ "$remote_spawn_rc" -eq 3 ] || exit "$remote_spawn_rc"
 fi
 # Backend selection (data/fm-backend-design-d7): explicit --backend, else
-# FM_BACKEND env, else config/backend, else runtime auto-detection, else
-# default tmux (fm_backend_name). fm_backend_validate_spawn refuses unknown or
+# FM_BACKEND env, else the launching session's own host, else config/backend,
+# else runtime auto-detection, else default tmux (fm_backend_resolve). A
+# --secondmate spawn skips the host step, because neither host backend (orca,
+# paseo-agent) runs secondmates. fm_backend_validate_spawn refuses unknown or
 # non-spawn-capable backends. The resolved value is
 # recorded in meta only when it is NOT tmux (fm-teardown.sh and fm-watch.sh's
 # window_backend/fm_backend_of_meta already treat an absent backend= as tmux),
@@ -2391,10 +2464,21 @@ if [ "$RELAUNCH" -eq 0 ]; then
   if [ "$BACKEND_SET" -eq 1 ]; then
     BACKEND=$BACKEND_ARG
     FM_BACKEND_DETECT_SIGNAL=""
+    # An explicit choice still wins; the notice only makes a standing
+    # instruction that names another backend visible in a session whose host
+    # would have chosen differently.
+    if [ "$KIND" != secondmate ] && fm_backend_detect_host >/dev/null &&
+      [ "$FM_BACKEND_HOST_DETECTED" != "$BACKEND" ]; then
+      echo "NOTICE: --backend $BACKEND overrides this session's host, which would select backend $FM_BACKEND_HOST_DETECTED ($FM_BACKEND_HOST_SIGNAL); task $ID runs on $BACKEND." >&2
+    fi
   else
     # Called directly so the one detection that chose BACKEND also leaves
     # FM_BACKEND_DETECT_SIGNAL for the meta's backend_detect= line below.
-    fm_backend_resolve
+    if [ "$KIND" = secondmate ]; then
+      fm_backend_resolve --no-host
+    else
+      fm_backend_resolve
+    fi
     BACKEND=$FM_BACKEND_RESOLVED
   fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
@@ -2409,6 +2493,10 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   if [ "$BACKEND" = paseo ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=paseo does not support --secondmate spawns yet" >&2
+    exit 1
+  fi
+  if [ "$BACKEND" = paseo-agent ] && [ "$KIND" = secondmate ]; then
+    echo "error: backend=paseo-agent does not support --secondmate spawns yet" >&2
     exit 1
   fi
   if [ "$BACKEND" = tern ] && [ "$KIND" = secondmate ]; then
@@ -2508,6 +2596,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: backend '$BACKEND' cannot launch a replacement agent into an existing endpoint (a T3 thread keeps its conversation, so a turn or a provider change on it continues the same agent); refusing to relaunch $ID" >&2
     exit 1
   }
+  # A Paseo relaunch starts a new agent on the desktop app's daemon, so it
+  # needs the same reachable, verified daemon a fresh spawn does.
+  if [ "$BACKEND" = paseo-agent ]; then
+    fm_backend_runtime_check "$BACKEND" || exit 1
+  fi
   # Two states are agent-free, and both license a relaunch:
   #   dead    - the endpoint exists and confidently holds no agent. The
   #             endpoint is ADOPTED, so the task keeps its exact address.
@@ -3584,6 +3677,25 @@ if [ "$BACKEND" = t3code ]; then
     exit 1
   fi
 fi
+# Paseo starts the agent itself through its provider, at full access, with the
+# provider's own account and a session environment Paseo screens, so the same
+# command-line-only settings refuse here. The provider's catalog fixes the
+# model and thinking option before any worktree or workspace exists.
+if [ "$BACKEND" = paseo-agent ]; then
+  if [ "$RAW_LAUNCH" = 1 ]; then
+    echo "error: backend=paseo-agent cannot run a raw launch command because Paseo starts the agent itself; pass --harness omp or choose another backend" >&2
+    exit 1
+  fi
+  if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
+    echo "error: backend=paseo-agent cannot apply config/launch-env-allowlist because Paseo starts the agent with its provider's environment; remove that file or choose another backend" >&2
+    exit 1
+  fi
+  if [ -n "$WORKER_ACCOUNT" ]; then
+    echo "error: backend=paseo-agent cannot apply the $HARNESS worker account pin because Paseo's provider owns the account; remove the pin or choose another backend" >&2
+    exit 1
+  fi
+  PASEO_AGENT_SELECTION=$(fm_backend_paseo_agent_model_selection "$HARNESS" "${MODEL:-default}" "${EFFORT:-default}") || exit 1
+fi
 if [ -n "$WORKER_ACCOUNT" ] && [ "$HARNESS" = claude ]; then
   if [ -n "$WORKER_ACCOUNT_ROOT" ]; then
     export CLAUDE_CONFIG_DIR=$WORKER_ACCOUNT_ROOT
@@ -4529,6 +4641,12 @@ if [ "$KIND" = ship ]; then
   # Every protection the captain configured is validated before any endpoint
   # exists, so a worker never launches without it.
   if [ "$STANDING_FORGE" = external ]; then
+    # The push guard rides core.hooksPath through GIT_CONFIG_* variables,
+    # which Paseo's omp provider refuses as session environment.
+    if [ "$BACKEND" = paseo-agent ]; then
+      echo "error: backend=paseo-agent cannot launch $ID: $PROJ_NAME is registered forge=external, whose push guard reaches the worker only through GIT_CONFIG_* variables that Paseo's omp provider refuses; choose another backend" >&2
+      exit 1
+    fi
     if [ "$YOLO" = on ]; then
       echo "error: --yolo on is refused for $ID: $PROJ_NAME is registered forge=external, where firstmate can neither observe nor perform the review tool's approval or merge; spawn with --yolo off" >&2
       exit 1
@@ -4993,7 +5111,28 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # uncommitted changes are exactly as the previous agent left them, and nothing
   # below may touch them.
   [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
-  if [ "$RELAUNCH_REBIND" -eq 0 ]; then
+  if [ "$BACKEND" = paseo-agent ]; then
+    # The recorded agent is archived (dead) or unknown to the daemon (missing),
+    # and a Paseo agent never hosts a second one, so a relaunch keeps the task's
+    # workspace and worktree and starts ONE new agent there below; the record
+    # published below rebinds paseo_agent_id to it. The recorded workspace is
+    # reopened on the same worktree only if something archived it.
+    PASEO_AGENT_PRIOR_ID=$RELAUNCH_TARGET
+    PASEO_AGENT_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" paseo_agent_workspace_id)
+    case "$(fm_backend_paseo_agent_workspace_state "$PASEO_AGENT_WORKSPACE_ID" "$WT" || echo unreadable)" in
+      active) ;;
+      absent)
+        PASEO_AGENT_WORKSPACE_ID=$(fm_backend_paseo_agent_workspace_create \
+          "$(fm_backend_paseo_agent_project_ensure "$PROJ_ABS")" "$WT" "$W") || exit 1
+        ;;
+      *)
+        echo "error: task $ID's Paseo workspace $PASEO_AGENT_WORKSPACE_ID could not be read back on its recorded worktree $WT; refusing to relaunch into it" >&2
+        exit 1
+        ;;
+    esac
+    T=
+    WT_TARGET=
+  elif [ "$RELAUNCH_REBIND" -eq 0 ]; then
     # Adopt the recorded endpoint instead of creating one. This is what keeps a
     # relaunch a REPLACEMENT rather than a second copy of the task: no new
     # terminal, no second worktree, and every uncommitted change left exactly
@@ -5503,6 +5642,34 @@ EOF
     fi
     T3CODE_ABORT_CLEANUP=1
     ;;
+  paseo-agent)
+    # A durable lease, as for T3: no pane runs the interactive `treehouse get`,
+    # and a slot a live Paseo agent works in must never be handed on. Then a
+    # LOCAL Paseo workspace on it, attached to the project so the task shows
+    # under it in Paseo's sidebar; archiving a local workspace never touches its
+    # directory, unlike a Paseo-managed worktree. The agent itself starts later
+    # (spawn_paseo_agent_start), once every fact its first message and session
+    # environment carry exists, because Paseo creates an agent only together
+    # with its first prompt.
+    PASEO_AGENT_PROJECT_ID=$(fm_backend_paseo_agent_project_ensure "$PROJ_ABS") || exit 1
+    WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || {
+      echo "error: treehouse get --lease failed to lease a worktree for $ID from $PROJ_ABS" >&2
+      exit 1
+    }
+    [ -n "$WT" ] || { echo "error: treehouse get --lease did not report a worktree for $ID" >&2; exit 1; }
+    validate_spawn_worktree "treehouse get --lease" "$WT (leased to $ID; once inspected, release it with 'treehouse return --force $WT' from $PROJ_ABS)"
+    PASEO_AGENT_LEASED=1
+    freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" "$PROJ_ABS" "$MODE" || {
+      if [ "$?" -eq 2 ]; then
+        PASEO_AGENT_LEASED=0
+        echo "error: $WT stays leased to $ID; once inspected, release it with 'treehouse return --force $WT' from $PROJ_ABS" >&2
+      fi
+      exit 1
+    }
+    PASEO_AGENT_WORKSPACE_ID=$(fm_backend_paseo_agent_workspace_create "$PASEO_AGENT_PROJECT_ID" "$WT" "$W") || exit 1
+    PASEO_AGENT_WORKSPACE_OPENED=1
+    T=
+    ;;
   esac
   # Orca and the Herdr projection own their own abort cleanup above; every other
   # endpoint a fresh polytoken spawn opened is closed by spawn_abort_cleanup when
@@ -5532,6 +5699,7 @@ spawn_send_text_line() { # <target> <text>
   paseo) fm_backend_paseo_send_text_line "$1" "$2" "$W" ;;
   rex) fm_backend_rex_send_text_line "$1" "$2" "$W" ;;
   t3code) fm_backend_t3code_send_literal "$1" "$2" ;;
+  paseo-agent) fm_backend_paseo_agent_send_literal "$1" "$2" ;;
   tern) fm_backend_tern_send_text_line "$1" "$2" "$W" ;;
   hc) fm_backend_hc_send_text_line "$1" "$2" "$W" ;;
   esac
@@ -5558,6 +5726,7 @@ spawn_send_literal() { # <target> <text>
   paseo) fm_backend_paseo_send_literal "$1" "$2" "$W" ;;
   rex) fm_backend_rex_send_literal "$1" "$2" "$W" ;;
   t3code) fm_backend_t3code_send_literal "$1" "$2" ;;
+  paseo-agent) fm_backend_paseo_agent_send_literal "$1" "$2" ;;
   tern) fm_backend_tern_send_literal "$1" "$2" "$W" ;;
   # hc has no paste without submit, and its keys cannot type the launch line's
   # `+` or `_`, so the line is pasted and submitted here and the Enter that
@@ -5576,6 +5745,7 @@ spawn_send_key() { # <target> <key>
   paseo) fm_backend_paseo_send_key "$1" "$2" "$W" ;;
   rex) fm_backend_rex_send_key "$1" "$2" "$W" ;;
   t3code) fm_backend_t3code_send_literal "$1" "$2" ;;
+  paseo-agent) fm_backend_paseo_agent_send_literal "$1" "$2" ;;
   tern) fm_backend_tern_send_key "$1" "$2" "$W" ;;
   hc)
     if [ "$2" = Enter ] && [ "$SPAWN_HC_LINE_SUBMITTED" = 1 ]; then
@@ -5612,9 +5782,9 @@ spawn_lease_herdr_slot() {
 # launch boundary and makes a dropped or ignored cwd change a refusal.
 spawn_enter_recorded_worktree() {
   [ "$KIND" = secondmate ] && return 0
-  # T3 starts the agent in the leased worktree its thread launch bound;
-  # there is no shell endpoint to receive a cd command.
-  [ "$BACKEND" = t3code ] && return 0
+  # T3 and Paseo start the agent in the leased worktree their thread or
+  # workspace bound; there is no shell endpoint to receive a cd command.
+  case "$BACKEND" in t3code|paseo-agent) return 0 ;; esac
   spawn_send_text_line "$WT_TARGET" "cd -- $(shell_quote "$WT")" || {
     echo "error: task $ID's endpoint could not be moved into its recorded worktree '$WT'; refusing to launch outside the copy holding its work" >&2
     exit 1
@@ -5628,6 +5798,13 @@ spawn_assert_agent_worktree() {
   local expected seen i last_poll=19 agent_status
   [ "$KIND" = secondmate ] && return 0
   case "$BACKEND" in orca|t3code) return 0 ;; esac
+  if [ "$BACKEND" = paseo-agent ]; then
+    # The agent's directory is its workspace's, so the workspace must read
+    # back active on exactly this worktree before an agent starts in it.
+    [ "$(fm_backend_paseo_agent_workspace_state "$PASEO_AGENT_WORKSPACE_ID" "$WT" || true)" = active ] && return 0
+    echo "error: task $ID's Paseo workspace $PASEO_AGENT_WORKSPACE_ID does not read back on its recorded worktree '$WT'; refusing to start an agent outside the copy holding its work" >&2
+    exit 1
+  fi
   expected=$(real_path_or_raw "$WT")
   # The out-of-pane Herdr lease no longer waits for the new shell to process
   # treehouse get. Allow its former minute of startup tolerance here, and
@@ -6102,6 +6279,10 @@ polytoken_spawn_fail() {  # <detail>
 
 if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = orca ]; then
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+elif [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = paseo-agent ]; then
+  # No shell to probe: the new agent starts in the recorded workspace, which
+  # spawn_assert_agent_worktree reads back on this worktree below.
+  validate_spawn_worktree "relaunch" "$WT"
 elif [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
@@ -6136,8 +6317,8 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  # A t3code slot was leased and validated in its target branch above.
-  if [ "$BACKEND" = t3code ]; then
+  # A t3code or paseo-agent slot was leased and validated in its target branch above.
+  if [ "$BACKEND" = t3code ] || [ "$BACKEND" = paseo-agent ]; then
     :
   elif [ "$BACKEND" = herdr ]; then
     spawn_lease_herdr_slot
@@ -6232,7 +6413,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     SPAWN_SLOT_CLAIMED=1
   fi
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != t3code ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != paseo-agent ]; then
   freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" "$PROJ_ABS" "$MODE" || exit 1
 fi
 
@@ -6524,6 +6705,19 @@ if [ "$KIND" = secondmate ]; then
     case "$HARNESS" in
     claude*) rm -f "$WT/.fm-busy-stop" ;;
     esac
+  fi
+fi
+# Paseo's omp provider starts the harness itself and takes no -e extension, so
+# no semantic busy source reaches a paseo-agent worker; Paseo's own status
+# table is its busy truth instead (paseo-agent-native in bin/fm-busy-lib.sh),
+# and a relaunch retires any earlier generation rather than leave it unclearable.
+if [ "$BACKEND" = paseo-agent ]; then
+  WIRING_HARNESS=
+  if [ -e "$STATE_REAL/$ID.busy-gen" ]; then
+    "$FM_ROOT/bin/fm-busy-event.sh" retire "$STATE_REAL" "$ID" --current-gen || {
+      echo "error: failed to retire the earlier busy-state contract for $ID" >&2
+      exit 1
+    }
   fi
 fi
 BUSY_GEN=
@@ -7292,6 +7486,11 @@ if [ "$EXTERNAL_REVIEW" = 1 ]; then
     exit 1
   }
   GIT_HOOKS_INSTALLED=1
+elif [ "$KEEP_AI_TRAILERS" = 0 ] && [ "$BACKEND" = paseo-agent ]; then
+  # This directory reaches a worker only through GIT_CONFIG_* variables, which
+  # Paseo's omp provider refuses as session environment, so nothing would read
+  # it; the gap is named rather than installed and silently ignored.
+  echo "warning: backend=paseo-agent cannot deliver the AI-trailer strip hooks to $ID (Paseo's omp provider refuses GIT_CONFIG_* session variables), so its commits keep any AI trailer the harness adds" >&2
 elif [ "$KEEP_AI_TRAILERS" = 0 ]; then
   "$FM_ROOT/bin/fm-git-strip-ai-trailers.sh" install "$GIT_HOOKS_DIR" "$WT" || {
     echo "error: could not install the AI-trailer strip hooks for $ID" >&2
@@ -7344,9 +7543,57 @@ else
   fi
 fi
 
+# A Paseo agent exists only together with its first message, so it starts here:
+# after every fact its launch brief and session environment carry exists, and
+# just before the record naming it is published (spawn_abort_cleanup archives it
+# if that publication fails). The session environment is the pane path's
+# pre-launch exports value for value, minus the hooks directory Paseo refuses
+# (see GIT_HOOKS_DIR above); TRACEPARENT is recorded in that same first record,
+# so delivered still implies recorded. A relaunch first proves the previous
+# agent archived, so two agents never share the task's workspace.
+spawn_paseo_agent_start() {
+  local provider thinking brief_file rc=0
+  local -a env=("GOTMPDIR=$TASK_TMP/gotmp" COMPACT_ADVISER_DISABLE=1
+    "FM_TASK_INBOX=$STATE_REAL/$ID.inbox" FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1)
+  [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" != 1 ] || env+=("LAVISH_AXI_HOST=$LAVISH_AXI_HOST")
+  case "$KIND" in ship | scout) env+=("FM_TASK_ID=$ID") ;; esac
+  [ -z "$SPAWN_TRACEPARENT" ] || env+=("TRACEPARENT=$SPAWN_TRACEPARENT")
+  provider=${PASEO_AGENT_SELECTION%%$'\t'*}
+  thinking=${PASEO_AGENT_SELECTION#*$'\t'}
+  if [ -n "$PASEO_AGENT_PRIOR_ID" ] && ! fm_backend_kill paseo-agent "$PASEO_AGENT_PRIOR_ID"; then
+    echo "error: could not prove task $ID's previous Paseo agent $PASEO_AGENT_PRIOR_ID archived; refusing to start a second agent in its workspace" >&2
+    exit 1
+  fi
+  brief_file=$(mktemp "${TMPDIR:-/tmp}/fm-paseo-agent-brief.XXXXXX") || exit 1
+  if ! "$FM_ROOT/bin/fm-operational-input.sh" encode launch-brief <"$BRIEF" >"$brief_file"; then
+    rm -f "$brief_file"
+    echo "error: could not encode the launch brief for $ID" >&2
+    exit 1
+  fi
+  PASEO_AGENT_CREATE_UNCERTAIN=1
+  PASEO_AGENT_ID=$(fm_backend_paseo_agent_create "$PASEO_AGENT_WORKSPACE_ID" "$W" "$provider" "$thinking" \
+    "$ID" "$KIND" "$brief_file" "${env[@]}") || rc=$?
+  rm -f "$brief_file"
+  if [ "$rc" -ne 0 ]; then
+    # Exit 1 is Paseo's own refusal before registration: nothing started.
+    [ "$rc" -ne 1 ] || PASEO_AGENT_CREATE_UNCERTAIN=0
+    echo "error: Paseo did not start an agent for $ID in workspace $PASEO_AGENT_WORKSPACE_ID" >&2
+    exit 1
+  fi
+  PASEO_AGENT_CREATE_UNCERTAIN=0
+  SPAWN_LAUNCH_SENT=1
+  PASEO_AGENT_ABORT_CLEANUP=1
+  T=$PASEO_AGENT_ID
+  WT_TARGET=$T
+}
+if [ "$BACKEND" = paseo-agent ]; then
+  spawn_paseo_agent_start
+fi
+
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 [ "$BACKEND" = t3code ] && META_WINDOW=$W
+[ "$BACKEND" = paseo-agent ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
 if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
@@ -7364,7 +7611,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness hermes_profile hermes_home kind mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id hc_session hc_terminal home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
+      split("window endpoint_task_id worktree project harness hermes_profile hermes_home kind mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id paseo_agent_id paseo_agent_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id hc_session hc_terminal home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -7410,16 +7657,21 @@ preserve_relaunch_meta() {
   [ "$HARNESS" != hermes ] || { echo "hermes_profile=$HERMES_PROFILE"; echo "hermes_home=$HERMES_PROFILE_HOME"; }
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
-  # Default-off writes no traceparent= line.
+  # Default-off writes no traceparent= line. A Paseo agent already received
+  # the carrier in its session environment, so its first record carries it.
+  [ "$BACKEND" != paseo-agent ] || [ -z "$SPAWN_TRACEPARENT" ] || echo "traceparent=$SPAWN_TRACEPARENT"
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
   # data/fm-backend-design-d7's P1 compatibility contract).
   [ "$BACKEND" = tmux ] || echo "backend=$BACKEND"
-  # backend_detect= records which Herdr app signal auto-selected hc, so the
-  # task record carries the reason, not just the result. Every other
-  # selection (explicit, default, or another detected backend) writes none.
+  # backend_detect= records which Herdr app signal auto-selected hc, or which
+  # launching-session host selected paseo-agent or orca, so the task record
+  # carries the reason, not just the result. Every other selection
+  # (explicit, default, or another detected backend) writes none.
   case "$BACKEND:${FM_BACKEND_DETECT_SIGNAL:-}" in
-    hc:app-terminal) echo "backend_detect=$FM_BACKEND_DETECT_SIGNAL" ;;
+    hc:app-terminal | paseo-agent:paseo-agent-host | orca:orca-chat | orca:orca-terminal)
+      echo "backend_detect=$FM_BACKEND_DETECT_SIGNAL"
+      ;;
   esac
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
@@ -7453,6 +7705,10 @@ preserve_relaunch_meta() {
   if [ "$BACKEND" = t3code ]; then
     echo "t3_thread_id=$T"
     echo "t3_project_id=$T3CODE_PROJECT_ID"
+  fi
+  if [ "$BACKEND" = paseo-agent ]; then
+    echo "paseo_agent_id=$T"
+    echo "paseo_agent_workspace_id=$PASEO_AGENT_WORKSPACE_ID"
   fi
   if [ "$BACKEND" = tern ]; then
     echo "tern_session_id=$TERN_SESSION_ID"
@@ -7955,6 +8211,10 @@ if [ "$BACKEND" = t3code ]; then
       exit 1
     }
   fi
+elif [ "$BACKEND" = paseo-agent ]; then
+  # No pane: these exports already reached the agent as its session
+  # environment in spawn_paseo_agent_start.
+  :
 else
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
@@ -8058,6 +8318,14 @@ if [ "$BACKEND" = t3code ]; then
   T3CODE_ABORT_CLEANUP=0
   T3CODE_LEASED=0
   T3CODE_HOME_ENV=0
+elif [ "$BACKEND" = paseo-agent ]; then
+  # The agent was created with its encoded launch brief as its first message
+  # (spawn_paseo_agent_start), and the record now owns it, so nothing is
+  # staged for a shell and the abort path no longer archives it or returns
+  # its copy.
+  PASEO_AGENT_ABORT_CLEANUP=0
+  PASEO_AGENT_LEASED=0
+  PASEO_AGENT_WORKSPACE_OPENED=0
 else
   if ! (umask 077 && mkdir "$LAUNCH_DIR") 2>/dev/null; then
     if [ -L "$LAUNCH_DIR" ] || [ ! -d "$LAUNCH_DIR" ] || [ ! -O "$LAUNCH_DIR" ] ||
