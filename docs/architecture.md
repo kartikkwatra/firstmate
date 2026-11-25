@@ -368,7 +368,9 @@ The refusal library's header owns the gate detection, lab-home exception, test-h
 ## Task shapes
 
 Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
-A design task is a ship whose worker asks the captain directly through the Plannotator Inbox and records his decisions in the project's `docs/decisions.md`; it is the only worker that may reach the captain, so `bin/fm-spawn.sh` withholds the Inbox tool from every other ship and scout.
+A design task is a ship whose worker asks the captain directly through the Plannotator Inbox and records his decisions as numbered MADR-format records in the project's `docs/decisions/`; it is the only worker that may reach the captain, so `bin/fm-spawn.sh` withholds the Inbox tool from every other ship and scout.
+Decisions change, so a changed decision is a new record that supersedes the old one rather than an edit, and every other ship brief tells its builder that only `Accepted` records are current requirements.
+The record template keeps adr-tools' `## Status` section above the MADR sections because adr-tools rewrites that section when it supersedes a record; `bin/fm-brief.sh` owns the design worker's procedure, including writing the same format by hand where adr-tools is absent.
 The intake and authority contract in `AGENTS.md` owns when separate scout research or a design worker is warranted.
 
 ## Dispatch profiles

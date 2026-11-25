@@ -1195,8 +1195,11 @@ test_scout_and_secondmate_scaffold() {
 # A design brief is the ship contract plus the design worker's captain channel:
 # the mode-shaped Definition of done, a replaced rule 6, and a `# Design
 # contract` opened by the fixed role line bin/fm-spawn.sh --design requires.
+# Its decisions go to superseding records in docs/decisions/, written with
+# adr-tools when it is on PATH and by hand otherwise, while a plain ship brief
+# tells its builder to follow only Accepted records and never write there.
 test_design_scaffold() {
-  local brief out rc case_dir fakebin base label version expect
+  local brief out rc case_dir fakebin base label version expect asset
   FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-design-q6 alpha --mode local-only --design >/dev/null 2>&1 \
     || fail "fm-brief.sh design scaffold exited non-zero"
   brief="$BRIEF_HOME/data/brief-design-q6/brief.md"
@@ -1209,7 +1212,13 @@ test_design_scaffold() {
     || fail "fm_brief_declares_design must recognize a scaffolded design brief"
   assert_grep 'plannotator_inbox' "$brief" "design contract must name the Inbox tool"
   assert_grep ':::question' "$brief" "design contract must batch questions as :::question blocks"
-  assert_grep 'docs/decisions.md' "$brief" "design contract must name the decisions file"
+  assert_grep "docs/decisions/" "$brief" "design contract must name the decision records folder"
+  assert_no_grep 'docs/decisions.md' "$brief" "design contract must not name the retired flat decisions file"
+  assert_grep 'supersedes the old one' "$brief" "design contract must supersede rather than edit a changed decision"
+  for asset in decisions-readme.md decision-template.md; do
+    assert_grep "$ROOT/.agents/skills/design-worker/assets/$asset" "$brief" "design contract must name the $asset asset"
+    assert_present "$ROOT/.agents/skills/design-worker/assets/$asset" "the $asset asset the design contract names must exist"
+  done
   assert_grep 'paused [at=<epoch>]: waiting on captain: <topic>' "$brief" "design contract must name the waiting status line"
   assert_grep 'resolved [at=<epoch>]: settled: <topic>' "$brief" "design contract must name the settled status line"
   assert_grep 'Never implement product code' "$brief" "design contract must forbid product code"
@@ -1221,8 +1230,15 @@ test_design_scaffold() {
   brief="$BRIEF_HOME/data/brief-ship-q6/brief.md"
   assert_no_grep '# Design contract' "$brief" "a plain ship brief must not carry the design contract"
   assert_grep 'If a decision belongs above the implementation worker' "$brief" "a plain ship brief keeps its decision rule"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief text.
+  assert_grep 'only a record whose `## Status` section reads `Accepted` is a current requirement' "$brief" "a plain ship brief must treat only Accepted decision records as current"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief text.
+  assert_grep 'Never create, edit, or delete anything in `docs/decisions/`' "$brief" "a plain ship brief must keep its builder out of the decision records"
   bash -c '. "$1/bin/fm-dod-lib.sh"; fm_brief_declares_design "$2"' _ "$ROOT" "$brief" \
     && fail "fm_brief_declares_design must not recognize a plain ship brief"
+  brief="$BRIEF_HOME/data/brief-design-q6/brief.md"
+  # shellcheck disable=SC2016 # Backticks are literal generated brief text.
+  assert_no_grep 'Never create, edit, or delete anything in `docs/decisions/`' "$brief" "a design brief must not forbid its own decision records"
 
   for flag in --scout '--secondmate alpha'; do
     # shellcheck disable=SC2086 # The secondmate case passes its project as a second word.
@@ -1255,6 +1271,44 @@ test_design_scaffold() {
 lavish-axi at the board compatibility floor^0.1.77^hosting
 absent lavish-axi^absent^text
 ROWS
+
+  # adr-tools may be installed behind a wrapper, so only its `adr` is on PATH;
+  # an unrelated `adr` that is not adr-tools must still get the hand-written path.
+  base=$(fm_test_base_path_sans "${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" adr adr-new)
+  for label in wrapped-tool unrelated-adr absent; do
+    case_dir="$TMP_ROOT/design-adr-$label"
+    mkdir -p "$case_dir/home/data"
+    fakebin=$(fm_fakebin "$case_dir")
+    case "$label" in
+      wrapped-tool)
+        cat >"$fakebin/adr" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = "help new" ] || exit 1
+printf '%s\n' 'usage: adr new [-s SUPERCEDED] [-l TARGET:LINK:REVERSE-LINK] TITLE_TEXT...' | ${ADR_PAGER:-more}
+SH
+        chmod +x "$fakebin/adr"
+        expect=tool
+        ;;
+      unrelated-adr) fm_fake_exit0 "$fakebin" adr; expect=hand ;;
+      *) expect=hand ;;
+    esac
+    PATH="$fakebin:$base" FM_HOME="$case_dir/home" \
+      "$ROOT/bin/fm-brief.sh" design-adr alpha --mode local-only --design >/dev/null \
+      || fail "$label: design scaffold failed"
+    brief="$case_dir/home/data/design-adr/brief.md"
+    if [ "$expect" = tool ]; then
+      assert_grep 'VISUAL=true ADR_DATE=<YYYY-MM-DD> adr new <title>' "$brief" "$label: design brief must create records with adr new"
+      # shellcheck disable=SC2016 # Backticks are literal generated brief text.
+      assert_grep '`-s <NNNN>-`' "$brief" "$label: design brief must supersede through adr new -s"
+      assert_no_grep 'adr-tools is not installed here' "$brief" "$label: design brief fell back to hand-written records"
+    else
+      assert_grep 'adr-tools is not installed here' "$brief" "$label: design brief must write records by hand"
+      assert_grep 'never install it' "$brief" "$label: design brief must not install adr-tools"
+      assert_grep 'Superceded by [M. <M' "$brief" "$label: design brief must mark the old record superseded"
+      assert_grep 'Supercedes [N. <N' "$brief" "$label: design brief must link the new record back"
+      assert_no_grep 'adr new' "$brief" "$label: design brief offered adr-tools that is not there"
+    fi
+  done
   pass "fm-brief: --design scaffolds the ship contract with the design captain channel and is ship-only"
 }
 

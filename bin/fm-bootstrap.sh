@@ -166,6 +166,13 @@
 #        fm-bootstrap.sh lavish-compatible
 #          Exit 0 when lavish-axi meets LAVISH_AXI_BOARD_MIN, 1 otherwise,
 #          printing nothing; bin/fm-brief.sh uses it to gate scout Lavish hosting.
+#        fm-bootstrap.sh adr-tools-available
+#          Exit 0 when the `adr` on PATH is adr-tools with its superseding
+#          `adr new -s`, as its own `adr help new` reports (adr-tools may sit
+#          behind a wrapper, so its `adr-new` need not be on PATH), 1 otherwise,
+#          printing nothing;
+#          bin/fm-brief.sh uses it to choose how a design worker writes
+#          decision records. adr-tools is optional and never installed here.
 #        fm-bootstrap.sh lavish-reply-compatible
 #          Exit 0 when lavish-axi meets LAVISH_AXI_MIN and supports synchronous
 #          reply acceptance, 1 when one version probe confirms an older release
@@ -1447,6 +1454,12 @@ startup_memory_budget_setup() {
     echo "STARTUP_MEMORY_BUDGET: invalid config/$FM_STARTUP_MEMORY_BUDGET_FILE - $FM_STARTUP_MEMORY_BUDGET_ERROR"
   fi
 }
+
+if [ "${1:-}" = "adr-tools-available" ]; then
+  command -v adr >/dev/null 2>&1 \
+    && ADR_PAGER='cat' adr help new 2>/dev/null | grep -q 'adr new \[-s SUPERCEDED\]'
+  exit
+fi
 
 if [ "${1:-}" = "lavish-compatible" ]; then
   tool_version_at_least lavish-axi "$LAVISH_AXI_BOARD_MIN"

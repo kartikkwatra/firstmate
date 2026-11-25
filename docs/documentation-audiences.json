@@ -155,6 +155,14 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/design-worker/assets/decision-template.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/design-worker/assets/decisions-readme.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/design-worker/SKILL.md",
       "audience": "agent-runtime"
     },

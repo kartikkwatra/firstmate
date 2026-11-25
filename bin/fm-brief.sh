@@ -23,14 +23,20 @@
 #   confirms the legacy board-compatibility floor; otherwise it asks for a text report.
 #   --design writes a design-worker brief: the ship contract (every ship input,
 #   --mode included, applies, and its branch delivers like any ship) whose
-#   deliverable is the captain's decisions recorded word for word in the
-#   project's docs/decisions.md. It replaces the ship rule that routes product
-#   choices through firstmate and adds a `# Design contract` section, opened by
-#   the fixed line "Worker role: design", that is the single statement of how a
-#   design worker asks the captain directly (Plannotator Inbox, Lavish pages),
-#   records decisions, and limits its status lines to workflow state.
+#   deliverable is the captain's decisions, each recorded word for word as its
+#   own numbered MADR-format decision record in the project's docs/decisions/.
+#   The record template and that folder's README are the design-worker skill's
+#   assets; `fm-bootstrap.sh adr-tools-available` chooses between creating and
+#   superseding records with adr-tools and writing the same format by hand.
+#   It replaces the ship rule that routes product choices through firstmate
+#   and adds a `# Design contract` section, opened by the fixed line
+#   "Worker role: design", that is the single statement of how a design worker
+#   asks the captain directly (Plannotator Inbox, Lavish pages), records
+#   decisions, and limits its status lines to workflow state.
 #   bin/fm-spawn.sh --design requires that line and every other spawn refuses it.
 #   Refused with --scout or --secondmate.
+#   Every other ship brief tells its builder that only Accepted records in
+#   docs/decisions/ are current requirements and that it never writes there.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -799,18 +805,25 @@ DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$UPSTREAM_CO
 
 # The ship rule 6 hands product choices to firstmate. A design brief keeps the
 # ship contract but replaces that rule and adds the `# Design contract`, the one
-# place the design worker's captain channel is stated; bin/fm-dod-lib.sh's
-# fm_brief_worker_role points at it and fm_brief_declares_design reads its fixed
-# opening line, which bin/fm-spawn.sh --design requires.
+# place the design worker's captain channel and decision-record procedure are
+# stated; bin/fm-dod-lib.sh's fm_brief_worker_role points at it and
+# fm_brief_declares_design reads its fixed opening line, which
+# bin/fm-spawn.sh --design requires. Every other ship brief instead carries the
+# builder's reading rule for those records.
 SCAFFOLD_KIND=ship
 DESIGN_SETUP=
 DESIGN_BLOCK=
+BUILDER_DECISIONS="
+The project's \`docs/decisions/\` holds the captain's product decisions as numbered records: only a record whose \`## Status\` section reads \`Accepted\` is a current requirement, and a \`Superceded by\` or \`Proposed\` record is history or undecided, never an instruction.
+Never create, edit, or delete anything in \`docs/decisions/\`."
 RULE6="6. If a decision belongs above the implementation worker (product choices, destructive actions),
    append \`needs-decision [at=<epoch>]: {summary of options}\` and stop. Firstmate will reply with the decision."
 if [ "$DESIGN" -eq 1 ]; then
   SCAFFOLD_KIND=design
+  BUILDER_DECISIONS=
+  DESIGN_ASSETS="$FM_ROOT/.agents/skills/design-worker/assets"
   DESIGN_SETUP="
-This is a DESIGN task: the deliverable is the captain's decisions, recorded word for word in the project's \`docs/decisions.md\` on your branch, plus any Lavish pages that walk him through them.
+This is a DESIGN task: the deliverable is the captain's decisions, recorded word for word as decision records in the project's \`docs/decisions/\` on your branch, plus any Lavish pages that walk him through them.
 You never implement product code."
   RULE6="6. Ask the captain product and design questions directly, as \`# Design contract\` says, never through firstmate.
    A decision that is not the captain's design call - a destructive action, a delivery or workflow choice - still goes to firstmate:
@@ -819,6 +832,15 @@ You never implement product code."
     DESIGN_LAVISH="Arm it with \`$FM_ROOT/bin/fm-procevent-lavish.sh arm <artifact.html> --for $ID\` and never run \`lavish-axi poll\` yourself; board feedback reaches you through your steering inbox, so re-arm with your reply after each nonterminal round, and at session_ended or an empty End acknowledge that final round with \`$FM_ROOT/bin/fm-procevent.sh handled <source-id> <sequence>\` instead of re-arming."
   else
     DESIGN_LAVISH="Lavish is unavailable here (lavish-axi is missing or below its supported version floor), so put the walk-through in the Inbox message itself, with images or attachments."
+  fi
+  if "$SCRIPT_DIR/fm-bootstrap.sh" adr-tools-available >/dev/null 2>&1; then
+    DESIGN_ADR="Create each record with adr-tools from your worktree root, in a \`( cd <worktree> && ... )\` subshell: \`VISUAL=true ADR_DATE=<YYYY-MM-DD> adr new <title>\`, adding \`-s <NNNN>-\` for each record it supersedes (the old record's four-digit number and its dash, because adr-tools matches that text against file names), then fill in the template's sections in the file it printed.
+   Keep the title to plain words, and never run \`adr init\`, which writes an unrelated first record."
+  else
+    DESIGN_ADR="adr-tools is not installed here, so write each record by hand in exactly the format adr-tools writes, and never install it.
+   Name the record \`docs/decisions/<NNNN>-<slug>.md\`: \`<NNNN>\` is one more than the highest number already there, zero-padded to four digits, and \`<slug>\` is the title lowercased with each run of other characters replaced by one \`-\`.
+   Copy the template and replace its \`NUMBER\` (unpadded), \`TITLE\`, \`DATE\`, and \`STATUS\` (\`Accepted\`) placeholders, then fill in its sections.
+   To supersede record N with record M, replace the \`Accepted\` line in N's \`## Status\` section with \`Superceded by [M. <M's title>](<M's file name>)\`, and add a blank line and \`Supercedes [N. <N's title>](<N's file name>)\` after \`Accepted\` in M's \`## Status\` section; that spelling is adr-tools' own, so both paths write identical records."
   fi
   DESIGN_BLOCK="# Design contract
 Worker role: design
@@ -829,12 +851,16 @@ You are the one kind of worker that talks to the captain directly; every exchang
 2. For a long walk-through, build a phone-friendly scrolling Lavish page; use one question per screen only for a decision round.
    $DESIGN_LAVISH
    Announce the page in an Inbox message with its https tailnet link, never a loopback address or a file path.
-3. Record every decision word for word with its date (YYYY-MM-DD) in the project's \`docs/decisions.md\`, creating the file if it is absent, and commit it on your branch.
-   That file is the only record of the decisions; firstmate keeps only workflow state.
+3. Record each decision the captain makes as its own numbered MADR-format decision record in the project's \`docs/decisions/\`, with his answer word for word and the date he gave it (YYYY-MM-DD) as the record's date, and commit it on your branch.
+   Before the first record, create whichever of these is missing and leave existing ones in place: \`docs/decisions/README.md\` copied from \`$DESIGN_ASSETS/decisions-readme.md\`, \`docs/decisions/templates/template.md\` copied from \`$DESIGN_ASSETS/decision-template.md\`, and a project-root \`.adr-dir\` file holding the line \`docs/decisions\`, which points adr-tools at the folder.
+   If an existing README does not say that only \`Accepted\` records are current and superseded ones are history, add that.
+   $DESIGN_ADR
+   Never edit an existing record's content: a changed or reversed decision is a new \`Accepted\` record that supersedes the old one, which stays as history.
+   These records are the only record of the decisions; firstmate keeps only workflow state.
 4. Status lines about the captain carry workflow state only, never a question's or a decision's content.
    When you send a round, append \`$PAUSED_VERB [at=<epoch>]: waiting on captain: <topic>\` and end your turn; his Inbox reply wakes this session.
    When a topic's decisions are recorded and committed, append \`resolved [at=<epoch>]: settled: <topic>\`; the \`done:\` line under Definition of done marks the whole task settled.
-5. Never implement product code: your branch changes only \`docs/decisions.md\` and the design notes or artifacts the Firstmate spec names.
+5. Never implement product code: your branch changes only \`docs/decisions/\`, the project-root \`.adr-dir\`, and the design notes or artifacts the Firstmate spec names.
 
 "
 fi
@@ -887,7 +913,7 @@ $WAIT_BLOCK$INBOX_SECTION
 
 $DESIGN_BLOCK# Project memory
 A project's \`AGENTS.md\` or \`CLAUDE.md\` is loaded into every agent session in that project, so edit it only to correct information that is factually wrong - including information your own change made wrong - and never to add knowledge because it is missing.
-A correction edits only the wrong text: do not run \`$FM_ROOT/bin/fm-ensure-agents-md.sh\`, create either file, or add sections, headings, or pointers alongside it.
+A correction edits only the wrong text: do not run \`$FM_ROOT/bin/fm-ensure-agents-md.sh\`, create either file, or add sections, headings, or pointers alongside it.$BUILDER_DECISIONS
 
 $DOD
 EOF

@@ -153,7 +153,7 @@ Route durable knowledge to its most specific owner:
 - Captain preferences shared across secondmate domains belong in the primary home's `data/captain-shared.md` under the `secondmate-provisioning` contract.
 - Fleet-local operational facts no declared tier owns belong in curated, home-local `data/learnings.md`.
 - Task-scoped notes belong with the backlog item, and investigation findings belong in the scout report.
-- The captain's product decisions belong word for word, with their date, in that project's committed `docs/decisions.md`, written by the design worker that asked; Firstmate keeps only workflow state about them.
+- The captain's product decisions belong word for word, with their date, as numbered decision records in that project's committed `docs/decisions/`, where only `Accepted` records are current, written by the design worker that asked; Firstmate keeps only workflow state about them.
 - Knowledge useful to almost every contributor to one project belongs in that project's committed `AGENTS.md`, which only deliberate human edits extend.
 - Knowledge general to every firstmate user belongs in this repo's shared tracked surface, which a user/operator home can only reach through an authorized contribution - otherwise it stays in `data/learnings.md` or a local draft for the captain.
 
@@ -185,7 +185,7 @@ Classify the deliverable:
 
 - **Ship** is the default and produces a project change through the selected delivery mode; once implementation is authorized, dispatch a ship and keep any remaining bounded research inside it unless unresolved uncertainty could materially change whether or what to build.
 - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
-- **Design** works product decisions through directly with the captain, in Plannotator Inbox questions and Lavish walk-throughs, and records them in the project's decisions file on a ship branch; it never implements product code.
+- **Design** works product decisions through directly with the captain, in Plannotator Inbox questions and Lavish walk-throughs, and records them as decision records in the project's `docs/decisions/` on a ship branch; it never implements product code.
   Load `design-worker` before dispatching a design worker and whenever one reports waiting on the captain or a settled topic.
 
 - If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
