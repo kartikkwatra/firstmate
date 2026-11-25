@@ -13,6 +13,9 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the paseo adapter)"; exit 0; }
+# The CLI resolver also honours PASEO_CLI (a Linux AppImage install), so an
+# inherited value would reach the real Paseo past the fakebin.
+unset PASEO_CLI
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-paseo-tests)
 

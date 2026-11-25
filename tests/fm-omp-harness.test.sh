@@ -892,6 +892,102 @@ EOF
   esac
 }
 
+# Under Paseo's omp provider (`omp --mode rpc-ui` with PASEO_AGENT_ID) a wake
+# is a hidden custom message that starts a run of its own: one raised while
+# main streams is parked until the run ends, wakes parked together go as one
+# message holding each in full, and one raised while main is idle goes at once.
+test_watch_extension_delivers_hidden_paseo_wakes() {
+  local repo home out status
+  repo="$TMP_ROOT/watch-paseo/repo"; home="$TMP_ROOT/watch-paseo/home"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  # The first two arm children close at once; the third closes on .go-3.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: started pid=%s (beacon 0s) recovery-generation=gen-1\n' "$$"
+n=0
+for f in "${FM_HOME:?}"/state/.fire-*; do [ -e "$f" ] && n=$((n + 1)); done
+if [ "$n" -lt 2 ]; then
+  : > "$FM_HOME/state/.fire-$((n + 1))"
+  sleep 0.5
+  printf 'signal: paseo-task-%s done\n' "$((n + 1))"
+  exit 0
+fi
+if [ "$n" -eq 2 ]; then
+  i=0
+  while [ "$i" -lt 300 ] && [ ! -e "$FM_HOME/state/.go-3" ]; do sleep 0.1; i=$((i + 1)); done
+  if [ -e "$FM_HOME/state/.go-3" ]; then
+    : > "$FM_HOME/state/.fire-3"
+    printf 'signal: paseo-task-3 done\n'
+    exit 0
+  fi
+fi
+sleep 30
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PASEO_AGENT_ID=00000000-0000-4000-8000-0000000000a1 FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_OMP_ARM_READY_TIMEOUT_MS=3000 \
+    FM_WATCH_REARM_RETRY_LIMIT=1 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { writeFileSync, existsSync } from "node:fs";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+// Paseo's provider runs omp in rpc-ui mode.
+process.argv.push("--mode", "rpc-ui");
+const handlers = new Map(); let tool = null; const hidden = []; const visible = [];
+const pi = {
+  on(e, h) { handlers.set(e, h); },
+  registerCommand() {},
+  registerTool(t) { tool = t; },
+  sendUserMessage(m, o) { visible.push({ m, o }); return undefined; },
+  sendMessage(m, o) { hidden.push({ m, o }); return undefined; },
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let idle = false;
+const ctx = { isIdle: () => idle };
+const mod = await import(pathToFileURL(process.env.EXT).href);
+mod.default(pi);
+await handlers.get("session_start")({ type: "session_start" }, ctx);
+await handlers.get("agent_start")({ type: "agent_start" }, ctx);
+await tool.execute();
+await sleep(3500);
+if (hidden.length !== 0 || visible.length !== 0) throw new Error(`a wake reached a streaming main: ${JSON.stringify({ hidden, visible })}`);
+idle = true;
+await handlers.get("agent_end")({ type: "agent_end" }, ctx);
+await sleep(800);
+if (visible.length !== 0) throw new Error(`a Paseo-hosted wake must not be a visible follow-up: ${JSON.stringify(visible)}`);
+if (hidden.length !== 1) throw new Error(`expected the two parked wakes as one hidden message, saw ${hidden.length}: ${JSON.stringify(hidden)}`);
+const first = hidden[0];
+if (first.m.customType !== "firstmate-watcher-wake" || first.m.display !== false) throw new Error(`the wake lost its hidden shape: ${JSON.stringify(first.m)}`);
+if (first.o?.deliverAs !== "followUp" || first.o?.triggerTurn !== true) throw new Error(`the wake must start its own run: ${JSON.stringify(first.o)}`);
+// Each wake keeps its whole text, drain instruction included, in raise order.
+const wake = (n) => `⁣FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: paseo-task-${n} done`;
+const drain = "Run bin/fm-wake-drain.sh first and handle the queued wake.";
+const at2 = first.m.content.indexOf(`\n\n${wake(2)}`);
+if (!first.m.content.startsWith(wake(1)) || at2 < 0 || !first.m.content.slice(0, at2).includes(drain) || !first.m.content.slice(at2).includes(drain)) {
+  throw new Error(`the parked wakes must arrive in order and in full: ${first.m.content}`);
+}
+// omp starts the hidden run: its custom message_start consumes both wakes.
+await handlers.get("agent_start")({ type: "agent_start" }, ctx);
+await handlers.get("message_start")({ type: "message_start", message: { role: "custom", customType: "firstmate-watcher-wake", content: first.m.content } }, ctx);
+await handlers.get("agent_end")({ type: "agent_end" }, ctx);
+writeFileSync(`${process.env.FM_HOME}/state/.go-3`, "");
+await sleep(2000);
+if (hidden.length !== 2) throw new Error(`a wake to an idle main must go at once, saw ${hidden.length}`);
+if (!hidden[1].m.content.startsWith(wake(3)) || !hidden[1].m.content.includes(drain) || /paseo-task-[12]/.test(hidden[1].m.content)) {
+  throw new Error(`the idle wake must arrive alone and in full: ${hidden[1].m.content}`);
+}
+await handlers.get("message_start")({ type: "message_start", message: { role: "custom", customType: "firstmate-watcher-wake", content: hidden[1].m.content } }, ctx);
+await handlers.get("session_shutdown")({}, {});
+if (existsSync(`${process.env.FM_HOME}/state/extensions/omp-primary-watch/session-replacement-actionable.json`)) throw new Error("consumed hidden wakes must not ride the replacement handoff");
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp watch extension Paseo delivery: $out"
+  [ -z "$out" ] || fail "omp watch extension Paseo test printed output: $out"
+  pass ".omp watch extension: under Paseo a wake is a hidden message that waits for main to go idle, batching wakes parked in one run"
+}
+
 # An opted-in home spawns the supervision host in the arm's place; its streamed
 # status line drives readiness and the handling handoff, and a handed-back
 # wake is delivered with every host line and the away note.
@@ -1194,6 +1290,7 @@ test_watch_extension_delivers_through_orca_chat accept
 test_watch_extension_delivers_through_orca_chat stale
 test_watch_extension_delivers_through_orca_chat broken
 test_watch_extension_delivers_through_orca_chat terminal
+test_watch_extension_delivers_hidden_paseo_wakes
 test_watch_extension_runs_the_supervision_host
 test_watch_extension_runs_the_supervision_host quiet
 test_watch_extension_keeps_the_arm_without_the_file_or_with_off

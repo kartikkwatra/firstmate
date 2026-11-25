@@ -172,3 +172,12 @@ Those facts set most limits below.
 ## Regression entry points
 
 [`verification/runtime-backends.md`](verification/runtime-backends.md#paseo-agents) records the live adapter, selection, and wake-delivery evidence, and names what is not yet verified.
+The portable suites run against a stateful fake `paseo` CLI and a fake omp extension API, so they need neither Paseo nor omp:
+
+```sh
+tests/fm-backend-paseo-agent.test.sh
+tests/fm-omp-harness.test.sh
+```
+
+The first covers the adapter's status table, catalog model selection, send verdicts, proven archive, interrupt claims, workspaces, projects, permission escalation, host-follow for Paseo and Orca, native busy state, and the spawn, control, and teardown arms.
+The second covers hidden wake delivery for a Paseo-hosted primary.

@@ -8,6 +8,7 @@
 # asserts on Paseo's resulting state and on call order. Nothing reaches a real
 # Paseo daemon; docs/verification/runtime-backends.md "Paseo agents" owns the
 # live evidence.
+# shellcheck disable=SC2016  # $1/$2 inside single quotes belong to the bash -c snippets pa_run and pa_resolve forward.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -556,6 +557,114 @@ test_spawn_leases_slot_opens_workspace_and_starts_agent_last() {
   pass "fm-spawn.sh --backend paseo-agent: leases the slot, opens a local workspace on it, starts the agent with the brief, records metadata"
 }
 
+pa_control() {  # <id> <verb> [args...]
+  HOME="$SPAWN_HOME" PA_TREEHOUSE_WT="$WT" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_PROJECTS_OVERRIDE="$CASE_DIR/unused-projects" FM_SPAWN_NO_GUARD=1 \
+    FM_CONTROL_POLL=0.05 FM_CONTROL_EXIT_WAIT=3 FM_CONTROL_LAUNCH_WAIT=1 FM_BACKEND_PASEO_AGENT_INTERRUPT_WAIT=2 \
+    "$ROOT/bin/fm-control.sh" "$@" 2>&1
+}
+
+test_control_lib_tables() {
+  bash -c '. "$0/bin/fm-control-lib.sh"; fm_control_backend_supports_key paseo-agent Escape && fm_control_backend_supports_key paseo-agent Enter && fm_control_backend_supports_key paseo-agent C-c && ! fm_control_backend_supports_key paseo-agent C-u && fm_control_backend_state_verified paseo-agent && fm_control_backend_exit_supported paseo-agent && fm_control_backend_relaunch_supported paseo-agent' "$ROOT" \
+    || fail "control-lib must accept Escape/Enter/C-c, refuse C-u, and treat paseo-agent as state-verified with exit and relaunch"
+  pass "fm-control-lib: paseo-agent key set, state-verified, exit, and relaunch membership"
+}
+
+test_control_interrupt_exit_and_relaunch() {
+  local id out rc first second wks
+  id=$(pa_uid pactl)
+  pa_task_case control "$id"
+  out=$(pa_spawn "$id" omp --scout --backend paseo-agent)
+  expect_code 0 $? "scout spawn"$'\n'"$out"
+  first=$(pa_meta "$id" paseo_agent_id)
+  wks=$(pa_meta "$id" paseo_agent_workspace_id)
+  out=$(pa_control "$id" interrupt); rc=$?
+  expect_code 0 "$rc" "interrupt on a running Paseo agent"$'\n'"$out"
+  [ "$(pa_call_line "^stop $first")" -gt 0 ] || fail "interrupt must stop the turn through Paseo"
+  assert_equals idle "$(pa_get ".agents[\"$first\"].Status")" "the interrupted agent is idle"
+  assert_equals false "$(pa_get ".agents[\"$first\"].Archived")" "interrupt never archives"
+  out=$(pa_control "$id" exit); rc=$?
+  expect_code 0 "$rc" "exit on a Paseo agent"$'\n'"$out"
+  assert_equals true "$(pa_get ".agents[\"$first\"].Archived")" "exit is a proven archive"
+  assert_equals false "$(pa_get ".workspaces[0].archived")" "exit leaves the workspace for a relaunch"
+  assert_present "$STATE/$id.meta" "exit keeps the task record"
+  out=$(pa_control "$id" relaunch --note "fresh context"); rc=$?
+  expect_code 0 "$rc" "relaunch on an exited Paseo agent"$'\n'"$out"
+  second=$(pa_meta "$id" paseo_agent_id)
+  assert_not_equals "$first" "$second" "relaunch rebinds the record to a new agent"
+  assert_equals "$wks" "$(pa_meta "$id" paseo_agent_workspace_id)" "relaunch keeps the recorded workspace"
+  assert_equals "$wks" "$(pa_get ".agents[\"$second\"].Workspace")" "the new agent starts in the recorded workspace"
+  assert_equals 1 "$(pa_get '.workspaces | length')" "relaunch opens no second workspace"
+  assert_contains "$(pa_get ".agents[\"$second\"].Prompt")" "FIRSTMATE_OP: v1 launch-brief:" "the new agent starts from the brief"
+  pass "fm-control.sh backend=paseo-agent: interrupt stops the turn, exit archives the agent, relaunch starts a new agent in the same workspace"
+}
+
+test_scout_teardown_archives_agent_and_workspace_before_slot_return() {
+  local id out rc agent
+  id=$(pa_uid patear)
+  pa_task_case teardown "$id"
+  out=$(pa_spawn "$id" omp --scout --backend paseo-agent)
+  expect_code 0 $? "scout spawn"$'\n'"$out"
+  agent=$(pa_meta "$id" paseo_agent_id)
+  printf 'report\n' > "$DATA/$id/report.md"
+  # The report holds no captain calls, as an inventoried scout's would record.
+  printf 'decisions_reviewed=1\ndecision_keys=\n' >> "$STATE/$id.meta"
+  mkdir -p "$CASE_DIR/neutral/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$CASE_DIR/neutral/bin/fm-guard.sh"
+  chmod +x "$CASE_DIR/neutral/bin/fm-guard.sh"
+  : > "$PASEO_LOG"
+  out=$( PA_TREEHOUSE_WT="$WT" FM_ROOT_OVERRIDE="$CASE_DIR/neutral" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="$CONFIG" "$ROOT/bin/fm-teardown.sh" "$id" 2>&1 ); rc=$?
+  expect_code 0 "$rc" "scout teardown once the report exists"$'\n'"$out"
+  assert_equals true "$(pa_get ".agents[\"$agent\"].Archived")" "teardown archives the agent"
+  assert_equals true "$(pa_get '.workspaces[0].archived')" "teardown archives the task workspace"
+  [ "$(pa_call_line "^archive $agent")" -gt 0 ] || fail "teardown must archive through Paseo"
+  [ "$(pa_call_line '^workspace archive')" -gt "$(pa_call_line "^archive $agent")" ] || fail "the workspace is archived after its agent"
+  [ "$(pa_call_line '^treehouse return')" -gt "$(pa_call_line '^workspace archive')" ] || fail "the slot returns only after the workspace is archived"
+  assert_absent "$STATE/$id.meta" "teardown removes the task record"
+  pass "fm-teardown.sh backend=paseo-agent: archives the agent, then its workspace, then returns the slot"
+}
+
+test_spawn_refuses_what_paseo_cannot_honor() {
+  local id out rc
+  id=$(pa_uid parefuse)
+  pa_task_case refusals "$id"
+  out=$(pa_spawn "$id" 'omp --print hello' --scout --backend paseo-agent); rc=$?
+  [ "$rc" -ne 0 ] || fail "a raw launch command must be refused"
+  assert_contains "$out" "cannot run a raw launch command" "the raw-launch refusal names the reason"
+  printf 'FOO\n' > "$CONFIG/launch-env-allowlist"
+  out=$(pa_spawn "$id" omp --scout --backend paseo-agent); rc=$?
+  [ "$rc" -ne 0 ] || fail "a launch-env allowlist must be refused"
+  assert_contains "$out" "cannot apply config/launch-env-allowlist" "the allowlist refusal names the file"
+  rm -f "$CONFIG/launch-env-allowlist"
+  [ "$(pa_call_line '^(run|workspace create) ')" = 0 ] || fail "a refused spawn must create nothing in Paseo"
+  [ "$(pa_call_line '^treehouse get')" = 0 ] || fail "a refused spawn must lease nothing"
+  assert_absent "$STATE/$id.meta" "a refused spawn publishes no record"
+  pass "fm-spawn.sh backend=paseo-agent: raw launch commands and launch-env allowlists are refused before any lease"
+}
+
+test_refused_agent_start_returns_lease_and_lost_start_keeps_it() {
+  local id out rc
+  id=$(pa_uid parefused)
+  pa_task_case start-refused "$id"
+  pa_set '.fail.run = "typed:PROVIDER_ERROR"'
+  out=$(pa_spawn "$id" omp --scout --backend paseo-agent); rc=$?
+  [ "$rc" -ne 0 ] || fail "a refused agent start must fail the spawn"$'\n'"$out"
+  assert_equals true "$(pa_get '.workspaces[0].archived')" "a refused start archives the task workspace"
+  [ "$(pa_call_line '^treehouse return')" -gt "$(pa_call_line '^workspace archive')" ] || fail "a refused start returns the slot after archiving the workspace"$'\n'"$out"
+  assert_absent "$STATE/$id.meta" "a refused start publishes no record"
+  id=$(pa_uid palost)
+  pa_task_case start-lost "$id"
+  pa_set '.fail.run = "lost"'
+  out=$(pa_spawn "$id" omp --scout --backend paseo-agent); rc=$?
+  [ "$rc" -ne 0 ] || fail "a start without Paseo's answer must fail the spawn"$'\n'"$out"
+  assert_contains "$out" "did not report an outcome" "a lost start says so"
+  [ "$(pa_call_line '^treehouse return')" = 0 ] || fail "a start that may have created an agent keeps the lease"
+  assert_absent "$STATE/$id.meta" "a lost start publishes no record"
+  pass "fm-spawn.sh backend=paseo-agent: a refused agent start returns the lease, a lost one keeps it"
+}
+
 fm_test_run \
   test_status_table_maps_every_paseo_row \
   test_model_selection_resolves_against_the_catalog \
@@ -568,4 +677,9 @@ fm_test_run \
   test_host_follow_selects_paseo_agent_only_inside_a_real_paseo_agent \
   test_host_follow_selects_orca_from_its_own_markers \
   test_busy_and_dispatch_read_paseo_native_state \
-  test_spawn_leases_slot_opens_workspace_and_starts_agent_last
+  test_spawn_leases_slot_opens_workspace_and_starts_agent_last \
+  test_control_lib_tables \
+  test_control_interrupt_exit_and_relaunch \
+  test_scout_teardown_archives_agent_and_workspace_before_slot_return \
+  test_spawn_refuses_what_paseo_cannot_honor \
+  test_refused_agent_start_returns_lease_and_lost_start_keeps_it

@@ -2614,7 +2614,7 @@ Four screenshots in the private task evidence directory record the result:
 A node unit check with a fake omp API confirmed that two wakes while streaming send nothing, that `agent_end` sends one hidden follow-up that triggers a turn, and that consumption leaves no replacement handoff.
 Paseo's projected timeline and live `paseo attach` stream showed only the assistant reply for a `display: false` custom message, and the model received its full content.
 
-`tests/fm-omp-harness.test.sh` passed all 11 extension cases when run outside omp ancestry (under `setsid` with `FM_OMP_HARNESS` unset).
+`tests/fm-omp-harness.test.sh` passed all 24 cases, including the Paseo hidden-delivery case that replays this unit check, when run outside omp ancestry (under `setsid` with `FM_OMP_HARNESS` unset).
 Run inside an omp worker, its decoy-name detection case fails because the real omp is an ancestor; that failure is environmental, not a defect in the extension.
 
 ### Idle runtime cleanup
