@@ -64,6 +64,19 @@
 // before_agent_start like any idle follow-up. Delivered means Orca accepted it.
 // If Orca refuses or cannot be reached, the wake falls back to the follow-up
 // with the adapter's error appended, so the failure is visible once read.
+// Under Paseo's omp provider (`omp --mode rpc-ui` with PASEO_AGENT_ID, see
+// paseoAgentHost), a wake travels as a hidden custom message
+// (sendMessage({customType: "firstmate-watcher-wake", display: false}) with
+// triggerTurn): the model reads the full wake while Paseo's chat shows no
+// bubble for it. It is sent only while main is idle, so it always starts a run
+// of its own: Paseo's chat folds every turn to its last assistant message, and
+// a wake that joined the running run (a follow-up, or omp's nextTurn queue,
+// whose next run starts before the current one reports its end) made the
+// wake's reply that last message and folded main's answer into the turn's
+// tool summary. A wake raised while main is streaming is parked in this
+// process (delivered, not consumed) and sent once main is idle; wakes parked
+// together go as one message holding each full wake in order. A parked or
+// sent wake is consumed at the custom message_start carrying its exact text.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -84,6 +97,10 @@ import { orcaChatTarget, sendToOrcaChat } from "../../.pi/extensions/lib/fm-orca
 type ExtensionAPI = {
   on?: (event: string, handler: (event: any, ctx: any) => unknown) => void;
   sendUserMessage: (content: string, options?: { deliverAs?: string }) => unknown;
+  sendMessage?: (
+    message: { customType: string; content: string; display: boolean },
+    options?: { deliverAs?: string; triggerTurn?: boolean },
+  ) => unknown;
   registerCommand?: (name: string, command: { description: string; handler: (args: string, ctx: any) => Promise<void> | void }) => void;
   registerTool?: (tool: Record<string, unknown>) => void;
 };
@@ -302,6 +319,23 @@ function hostWakeMessage(output: string): string {
     lines.push("This wake comes from automatic supervision under the away-posture record, not from the captain: it is not a return, so handle it under the away posture.");
   }
   return lines.join("\n");
+}
+
+// The custom message type a Paseo-hosted primary's hidden wake carries.
+const paseoWakeType = "firstmate-watcher-wake";
+
+// Whether this omp serves a Paseo agent's chat: Paseo's omp provider runs
+// `omp --mode rpc-ui` (or rpc) and puts the agent's id in PASEO_AGENT_ID. An
+// omp that merely inherited that environment from a primary's shell runs in
+// another mode, so it keeps the ordinary follow-up.
+function paseoAgentHost(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv,
+): boolean {
+  if (!env.PASEO_AGENT_ID) return false;
+  const flag = argv.indexOf("--mode");
+  const mode = flag >= 0 ? argv[flag + 1] : argv.find((arg) => arg.startsWith("--mode="))?.slice("--mode=".length);
+  return mode === "rpc-ui" || mode === "rpc";
 }
 
 // The text omp carries in a user message_start: sendUserMessage wraps a string
@@ -568,6 +602,67 @@ export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
   activateGeneration(generation);
   const orcaChat = orcaChatTarget();
+  const paseoHost = !orcaChat && paseoAgentHost() && typeof pi.sendMessage === "function";
+  // Paseo-hosted delivery (header, "Under Paseo's omp provider"): the latest
+  // event context answers whether main is idle; the run events are the
+  // fallback when a context cannot.
+  let hostContext: { isIdle?: () => unknown } | null = null;
+  let mainStreaming = false;
+  const parkedWakes: { owner: SessionGeneration; content: string; pending?: PendingActionableClose }[] = [];
+  let parkedPoll: ReturnType<typeof setInterval> | null = null;
+
+  function mainIdle(): boolean {
+    try {
+      const idle = hostContext?.isIdle?.();
+      if (typeof idle === "boolean") return idle;
+    } catch {
+      // A context left by a replaced session; the run events answer instead.
+    }
+    return !mainStreaming;
+  }
+
+  // Send every wake a live generation parked as one hidden message that
+  // starts a run of its own, but only while main is idle; otherwise keep them
+  // parked and look again each second (agent_end looks sooner).
+  function flushParkedWakes(): void {
+    const live = parkedWakes.splice(0).filter((wake) => generationIsLive(wake.owner));
+    if (live.length > 0 && !mainIdle()) parkedWakes.push(...live);
+    if (parkedWakes.length > 0) {
+      if (!parkedPoll) {
+        parkedPoll = setInterval(flushParkedWakes, 1000);
+        parkedPoll.unref();
+      }
+      return;
+    }
+    if (parkedPoll) {
+      clearInterval(parkedPoll);
+      parkedPoll = null;
+    }
+    if (live.length === 0) return;
+    const content = live.map((wake) => wake.content).join("\n\n");
+    for (const wake of live) {
+      if (wake.pending) wake.owner.unconsumedWakes.set(wake.pending.token, { content, pending: wake.pending });
+    }
+    try {
+      pi.sendMessage?.({ customType: paseoWakeType, content, display: false }, { deliverAs: "followUp", triggerTurn: true });
+    } catch (error) {
+      // Visible but delivered: the ordinary follow-up with the refusal appended.
+      const detail = error instanceof Error ? error.message : String(error);
+      const fallback = `${content}\n\nwatcher: FAILED - ${detail} This wake fell back to an omp follow-up, which Paseo shows in the chat.`;
+      for (const wake of live) {
+        if (wake.pending) wake.owner.unconsumedWakes.set(wake.pending.token, { content: fallback, pending: wake.pending });
+      }
+      try {
+        pi.sendUserMessage(fallback, { deliverAs: "followUp" });
+      } catch {
+        // Neither path took it: the records stay pending, so the next close or
+        // a replacement delivers them again.
+        for (const wake of live) {
+          if (wake.pending) wake.owner.unconsumedWakes.delete(wake.pending.token);
+        }
+      }
+    }
+  }
 
   async function sendWake(
     owner: SessionGeneration,
@@ -591,6 +686,14 @@ export default function (pi: ExtensionAPI) {
         );
       }
     }
+    if (paseoHost) {
+      // Accepted means parked here or handed to omp; consumption is the
+      // custom message_start (header).
+      if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
+      parkedWakes.push({ owner, content, pending });
+      flushParkedWakes();
+      return generationIsLive(owner);
+    }
     if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
     try {
       await pi.sendUserMessage(content, { deliverAs: "followUp" });
@@ -606,7 +709,10 @@ export default function (pi: ExtensionAPI) {
   }
 
   // omp consumed a main follow-up: an idle main at before_agent_start, a
-  // streaming main at the user message_start that joins the running run.
+  // streaming main at the user message_start that joins the running run, and a
+  // Paseo-hosted main at the custom message_start of its hidden wake. Every
+  // record carrying that exact text is consumed: wakes parked together share
+  // one message.
   function consumeWake(owner: SessionGeneration, text: string): void {
     for (const [token, wake] of owner.unconsumedWakes) {
       if (wake.content !== text) continue;
@@ -618,7 +724,6 @@ export default function (pi: ExtensionAPI) {
         surfaceCleanupFailure(owner, error);
         schedulePendingCleanup(owner);
       }
-      return;
     }
   }
 
@@ -1123,12 +1228,26 @@ export default function (pi: ExtensionAPI) {
     consumeWake(generation, String((event as { prompt?: unknown })?.prompt ?? ""));
   });
   pi.on?.("message_start", (event) => {
-    const message = (event as { message?: { role?: unknown; content?: unknown } })?.message;
-    if (!message || message.role !== "user") return;
-    consumeWake(generation, userMessageText(message.content));
+    const message = (event as { message?: { role?: unknown; customType?: unknown; content?: unknown } })?.message;
+    if (!message) return;
+    if (message.role === "user" || (message.role === "custom" && message.customType === paseoWakeType)) {
+      consumeWake(generation, userMessageText(message.content));
+    }
   });
+  if (paseoHost) {
+    pi.on?.("agent_start", (_event, ctx) => {
+      if (ctx) hostContext = ctx;
+      mainStreaming = true;
+    });
+    pi.on?.("agent_end", (_event, ctx) => {
+      if (ctx) hostContext = ctx;
+      mainStreaming = false;
+      if (parkedWakes.length > 0) setTimeout(flushParkedWakes, 250).unref();
+    });
+  }
 
-  pi.on?.("session_start", async () => {
+  pi.on?.("session_start", async (_event, ctx) => {
+    if (ctx) hostContext = ctx;
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     markLoaded();
