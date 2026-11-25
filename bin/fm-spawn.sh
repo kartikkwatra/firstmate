@@ -1716,7 +1716,9 @@ T3CODE_CREATE_UNCERTAIN=0
 T3CODE_LAUNCH_UNCONFIRMED=0
 T3CODE_PROJECT_ID=
 T3CODE_MODEL_SELECTION=
-PASEO_AGENT_ID=
+# Not PASEO_AGENT_ID: that inherited name is the host signal fm_backend_resolve
+# reads to follow a Paseo-hosted session, so resetting it here would hide the host.
+PASEO_WORKER_AGENT_ID=
 PASEO_AGENT_WORKSPACE_ID=
 PASEO_AGENT_PRIOR_ID=
 PASEO_AGENT_LEASED=0
@@ -1963,20 +1965,20 @@ spawn_abort_cleanup() {
     fi
   elif [ "$PASEO_AGENT_ABORT_CLEANUP" = 1 ]; then
     PASEO_AGENT_ABORT_CLEANUP=0
-    if ! fm_backend_kill paseo-agent "$PASEO_AGENT_ID"; then
+    if ! fm_backend_kill paseo-agent "$PASEO_WORKER_AGENT_ID"; then
       PASEO_AGENT_WORKSPACE_OPENED=0
       if [ "$PASEO_AGENT_LEASED" = 1 ]; then
         PASEO_AGENT_LEASED=0
-        echo "warning: could not stop and archive Paseo agent $PASEO_AGENT_ID for $ID, so the leased worktree $WT stays leased; archive the agent ('paseo archive --force $PASEO_AGENT_ID') and workspace $PASEO_AGENT_WORKSPACE_ID, then run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+        echo "warning: could not stop and archive Paseo agent $PASEO_WORKER_AGENT_ID for $ID, so the leased worktree $WT stays leased; archive the agent ('paseo archive --force $PASEO_WORKER_AGENT_ID') and workspace $PASEO_AGENT_WORKSPACE_ID, then run 'treehouse return --force $WT' from $PROJ_ABS" >&2
       else
-        echo "warning: could not stop and archive Paseo agent $PASEO_AGENT_ID for $ID; archive it with 'paseo archive --force $PASEO_AGENT_ID'" >&2
+        echo "warning: could not stop and archive Paseo agent $PASEO_WORKER_AGENT_ID for $ID; archive it with 'paseo archive --force $PASEO_WORKER_AGENT_ID'" >&2
       fi
     elif [ "$PASEO_AGENT_LEASED" = 1 ]; then
       local paseo_slot_status
       paseo_slot_status=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null) || paseo_slot_status=unreadable
       if [ -n "$paseo_slot_status" ]; then
         PASEO_AGENT_LEASED=0
-        echo "warning: Paseo agent $PASEO_AGENT_ID for $ID ran before the spawn failed, and its worktree $WT may hold its work, so it stays leased; once inspected, run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+        echo "warning: Paseo agent $PASEO_WORKER_AGENT_ID for $ID ran before the spawn failed, and its worktree $WT may hold its work, so it stays leased; once inspected, run 'treehouse return --force $WT' from $PROJ_ABS" >&2
       fi
     fi
   fi
@@ -7571,7 +7573,7 @@ spawn_paseo_agent_start() {
     exit 1
   fi
   PASEO_AGENT_CREATE_UNCERTAIN=1
-  PASEO_AGENT_ID=$(fm_backend_paseo_agent_create "$PASEO_AGENT_WORKSPACE_ID" "$W" "$provider" "$thinking" \
+  PASEO_WORKER_AGENT_ID=$(fm_backend_paseo_agent_create "$PASEO_AGENT_WORKSPACE_ID" "$W" "$provider" "$thinking" \
     "$ID" "$KIND" "$brief_file" "${env[@]}") || rc=$?
   rm -f "$brief_file"
   if [ "$rc" -ne 0 ]; then
@@ -7583,7 +7585,7 @@ spawn_paseo_agent_start() {
   PASEO_AGENT_CREATE_UNCERTAIN=0
   SPAWN_LAUNCH_SENT=1
   PASEO_AGENT_ABORT_CLEANUP=1
-  T=$PASEO_AGENT_ID
+  T=$PASEO_WORKER_AGENT_ID
   WT_TARGET=$T
 }
 if [ "$BACKEND" = paseo-agent ]; then

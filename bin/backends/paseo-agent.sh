@@ -542,20 +542,26 @@ fm_backend_paseo_agent_transition_note() {  # <record>
 # child is reparented away from the daemon, and a worker agent runs in its
 # worktree, not the home.
 fm_backend_paseo_agent_host_agent() {
-  local agent=${PASEO_AGENT_ID:-} status pids pid hops=0 found=0 out cwd home_real cwd_real
+  local agent=${PASEO_AGENT_ID:-} status pids out cwd home_real cwd_real
   [ -n "$agent" ] || return 1
   case "$agent" in *[!0-9a-fA-F-]*) return 1 ;; esac
   fm_backend_paseo_bin >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
   status=$(fm_backend_paseo_cli status --json 2>/dev/null) || return 1
   pids=" $(printf '%s' "$status" | jq -r '[.pid, .workerPid] | map(select(type == "number")) | map(tostring) | join(" ")' 2>/dev/null) "
   [ "$pids" != "  " ] || return 1
-  pid=$$
-  while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null && [ "$hops" -lt 64 ]; do
-    case "$pids" in *" $pid "*) found=1; break ;; esac
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-    hops=$((hops + 1))
-  done
-  [ "$found" = 1 ] || return 1
+  # The walk runs in an absolute /bin/sh, which is always a real process that
+  # descends from this shell and stays alive for the whole walk: omp's embedded
+  # shell runs `bash <script>` and `bash -c` in-process with a synthetic $$ that
+  # names no process, so this shell's own $$ cannot start the walk there.
+  # shellcheck disable=SC2016  # $$, $1, and the loop variables belong to /bin/sh.
+  /bin/sh -c '
+    pid=$$ hops=0
+    while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null && [ "$hops" -lt 64 ]; do
+      case "$1" in *" $pid "*) exit 0 ;; esac
+      pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d "[:space:]")
+      hops=$((hops + 1))
+    done
+    exit 1' fm-paseo-host "$pids" || return 1
   out=$(fm_backend_paseo_agent_inspect "$agent") || return 1
   [ "$(printf '%s' "$out" | jq -r '.Archived // false' 2>/dev/null)" = false ] || return 1
   cwd=$(printf '%s' "$out" | jq -r '.Cwd // empty' 2>/dev/null)

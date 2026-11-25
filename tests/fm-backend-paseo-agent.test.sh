@@ -557,6 +557,24 @@ test_spawn_leases_slot_opens_workspace_and_starts_agent_last() {
   pass "fm-spawn.sh --backend paseo-agent: leases the slot, opens a local workspace on it, starts the agent with the brief, records metadata"
 }
 
+# A spawn without --backend inside a Paseo agent in this home follows the host
+# end to end: fm-spawn's own state must not reset the PASEO_AGENT_ID it inherits.
+test_spawn_without_backend_follows_a_paseo_agent_host() {
+  local id out
+  id=$(pa_uid pahost)
+  pa_task_case spawnhost "$id"
+  printf 'orca\n' > "$CONFIG/backend"
+  pa_set ".status.workerPid = $$"
+  pa_agent "$A1" idle false 0 "$CASE_DIR/home"
+  out=$(PASEO_AGENT_ID="$A1" pa_spawn "$id" omp --scout)
+  expect_code 0 $? "fm-spawn.sh without --backend inside a Paseo agent"$'\n'"$out"
+  assert_contains "$out" "rather than config/backend's 'orca'" "the spawn names the host it followed over config/backend"
+  assert_equals paseo-agent "$(pa_meta "$id" backend)" "the scout runs on the host's backend"
+  assert_equals paseo-agent-host "$(pa_meta "$id" backend_detect)" "meta records the host signal"
+  assert_equals "$(pa_get '.lastAgent')" "$(pa_meta "$id" paseo_agent_id)" "meta records the new worker agent, not the host"
+  pass "fm-spawn.sh without --backend: a Paseo-hosted session spawns a native Paseo agent"
+}
+
 pa_control() {  # <id> <verb> [args...]
   HOME="$SPAWN_HOME" PA_TREEHOUSE_WT="$WT" \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
@@ -678,6 +696,7 @@ fm_test_run \
   test_host_follow_selects_orca_from_its_own_markers \
   test_busy_and_dispatch_read_paseo_native_state \
   test_spawn_leases_slot_opens_workspace_and_starts_agent_last \
+  test_spawn_without_backend_follows_a_paseo_agent_host \
   test_control_lib_tables \
   test_control_interrupt_exit_and_relaunch \
   test_scout_teardown_archives_agent_and_workspace_before_slot_return \
