@@ -111,12 +111,13 @@
 #   overlay; an existing managed scope is refused. The profile's own gateway
 #   may run only while idle; a mid-turn, ambiguous or unreadable gateway is
 #   refused without changing it. No profile config or SOUL is edited.
-#   --model <name> and --effort <low|medium|high|xhigh|max|ultra> are concrete profile
+#   --model <name> and --effort <low|medium|high|xhigh|max|ultra|auto> are concrete profile
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
 #   from that harness's launch rather than guessed. Ultra is the explicit
 #   exception: bin/fm-harness.sh validate-native-effort owns its model scope;
 #   supported Pi launches receive --codex-effort ultra, never --thinking ultra.
+#   auto is omp-only (same validator) and launches as omp --thinking auto.
 #   OpenCode 2 has no interactive model or effort flag, so its selected model
 #   and effort are written as the build agent's model and variant inside the
 #   OPENCODE_CONFIG_CONTENT JSON its launch already carries (config schema
@@ -1284,9 +1285,9 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
   }
 fi
 case "$EFFORT" in
-'' | low | medium | high | xhigh | max | ultra) ;;
+'' | low | medium | high | xhigh | max | ultra | auto) ;;
 *)
-  echo "error: --effort must be one of low, medium, high, xhigh, max, ultra" >&2
+  echo "error: --effort must be one of low, medium, high, xhigh, max, ultra, auto" >&2
   exit 1
   ;;
 esac
@@ -3999,9 +4000,10 @@ effort_flag_for_harness() {
     ;;
   omp)
     # omp 18.1.11 --thinking accepts off|minimal|low|medium|high|xhigh|max|auto,
-    # a superset of the shared vocabulary, so every level maps straight across.
+    # a superset of the shared vocabulary, so every level maps straight across;
+    # the omp-only effort auto passes through as --thinking auto (omp's default).
     case "$effort" in
-    low | medium | high | xhigh | max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+    low | medium | high | xhigh | max | auto) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
     esac
     ;;
   opencode)

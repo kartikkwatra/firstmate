@@ -22,7 +22,8 @@
 #        fm-harness.sh validate-native-effort <harness> <model> <effort>
 #                                        Refuse ultra unless the harness is pi or
 #                                        pi-signed and the model explicitly names
-#                                        codex-native/<id>. Other efforts retain
+#                                        codex-native/<id>, and refuse auto unless
+#                                        the harness is omp. Other efforts retain
 #                                        their adapter's existing policy. Native
 #                                        Codex validates model support at startup.
 #        fm-harness.sh ancestry [<pid>] print "<strength> <harness>" for the nearest
@@ -674,6 +675,11 @@ resolve_secondmate_effort() {
 
 validate_native_effort() {
   local harness=${1:-} model=${2:-} effort=${3:-}
+  if [ "$effort" = auto ]; then
+    [ "$harness" = omp ] && return 0
+    echo "error: auto effort is omp-only (omp --thinking auto)" >&2
+    return 1
+  fi
   [ "$effort" = ultra ] || return 0
   case "$harness" in
     pi|pi-signed)

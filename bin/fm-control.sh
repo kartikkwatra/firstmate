@@ -335,8 +335,8 @@ fi
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
 [ "$EFFORT_SET" = 0 ] || [ -n "$NEW_EFFORT" ] || die "--effort requires a non-empty value"
 case "$NEW_EFFORT" in
-  ''|default|low|medium|high|xhigh|max|ultra) ;;
-  *) die "--effort must be one of default, low, medium, high, xhigh, max, ultra" ;;
+  ''|default|low|medium|high|xhigh|max|ultra|auto) ;;
+  *) die "--effort must be one of default, low, medium, high, xhigh, max, ultra, auto" ;;
 esac
 
 # --- exact task-id resolution ----------------------------------------------
@@ -1037,9 +1037,9 @@ resolve_relaunch_profile() {
       die "the configured secondmate effort pin for $ID cannot be read; fix config/secondmate-harness rather than relaunching onto an unresolved effort"
     fi
     case "$CONFIG_EFFORT" in
-      ''|low|medium|high|xhigh|max|ultra) ;;
+      ''|low|medium|high|xhigh|max|ultra|auto) ;;
       *)
-        echo "warning: config/secondmate-harness effort token '$CONFIG_EFFORT' is not one of low, medium, high, xhigh, max, ultra; ignoring" >&2
+        echo "warning: config/secondmate-harness effort token '$CONFIG_EFFORT' is not one of low, medium, high, xhigh, max, ultra, auto; ignoring" >&2
         CONFIG_EFFORT=
         ;;
     esac
