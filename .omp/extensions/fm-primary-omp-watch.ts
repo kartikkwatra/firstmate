@@ -46,6 +46,15 @@
 // handoff carries actionable closes that were still pending delivery; its
 // durable state lives at state/extensions/omp-primary-watch/session-replacement-actionable.json.
 // Stale callbacks from a prior generation are no-ops against the active replacement.
+// A task sub-agent runs in the primary's process and cwd, so it binds this
+// module while the primary's generation is live. A session may claim a
+// generation only when none is live under another session, so a sub-agent
+// never claims monitoring and its session_shutdown never retires the primary's
+// generation. omp's parentSession header field is not a sub-agent marker (/new
+// and /fork set it too) and taskDepth is not exposed to extensions, so this
+// structural rule is the detection. fm_watch_arm_omp in a lock-owning session
+// whose own generation was retired starts a fresh generation instead of
+// refusing.
 //
 // Delivery versus consumption (stated once here):
 // A main follow-up is delivered once omp accepts it (sendUserMessage returns).
@@ -185,6 +194,7 @@ const hostReadyTimeoutMs = Math.max(armReadyTimeoutMs, 30000);
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
 const repairOnlyHint = "call fm_watch_arm_omp again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - omp session is shutting down";
+const subagentMessage = "watcher: not armed - this omp session is a sub-agent; the primary session owns monitoring";
 
 let nextGenerationId = 0;
 let nextHandoffId = 0;
@@ -536,6 +546,13 @@ function activateGeneration(generation: SessionGeneration): void {
   activeGeneration = generation;
 }
 
+// A task sub-agent runs in the primary's process, so it binds this same module
+// while the primary's generation is live. Only a session finding no live
+// generation held by another session may claim one; a sub-agent never does.
+function generationClaimable(generation: SessionGeneration): boolean {
+  return activeGeneration === null || activeGeneration === generation || activeGeneration.stopping;
+}
+
 function generationIsLive(generation: SessionGeneration): boolean {
   return activeGeneration === generation && !generation.stopping;
 }
@@ -600,7 +617,7 @@ process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
-  activateGeneration(generation);
+  if (generationClaimable(generation)) activateGeneration(generation);
   const orcaChat = orcaChatTarget();
   const paseoHost = !orcaChat && paseoAgentHost() && typeof pi.sendMessage === "function";
   // Paseo-hosted delivery (header, "Under Paseo's omp provider"): the latest
@@ -1249,12 +1266,15 @@ export default function (pi: ExtensionAPI) {
   pi.on?.("session_start", async (_event, ctx) => {
     if (ctx) hostContext = ctx;
     if (generation.stopping) generation = createGeneration();
-    activateGeneration(generation);
     markLoaded();
+    if (!generationClaimable(generation)) return;
+    activateGeneration(generation);
     if (lockOwnership() !== "owned") return;
     activateOwnedWatch(generation);
   });
   pi.on?.("session_shutdown", async () => {
+    // A sub-agent's shutdown never touches the primary's generation.
+    if (activeGeneration !== generation) return;
     // omp carries no shutdown reason (verified: `reason` is undefined), so the
     // replacement handoff is always persisted when anything is pending; a
     // terminal quit then merely replays an already-drained wake next start.
@@ -1262,10 +1282,21 @@ export default function (pi: ExtensionAPI) {
     await stopSessionGeneration(generation, true);
   });
 
+  // The arming entry points. A lock-owning session whose generation was
+  // retired starts a fresh one rather than refusing; a sub-agent is refused.
+  function armFromCaller(): ArmResult {
+    if (generation.stopping && generationClaimable(generation) && lockOwnership() === "owned") {
+      generation = createGeneration();
+    }
+    if (!generationClaimable(generation)) return { ok: false, message: subagentMessage };
+    activateGeneration(generation);
+    return activateOwnedWatch(generation);
+  }
+
   pi.registerCommand?.("fm-watch-arm-omp", {
     description: "Arm firstmate watcher supervision through the omp extension instead of foreground bash.",
     handler: async (_args, ctx) => {
-      const result = activateOwnedWatch(generation);
+      const result = armFromCaller();
       ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
     },
   });
@@ -1280,7 +1311,7 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({}),
     execute: async () => {
-      const result = activateOwnedWatch(generation);
+      const result = armFromCaller();
       return {
         content: [{ type: "text", text: result.message }],
         details: result,

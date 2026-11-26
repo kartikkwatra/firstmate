@@ -988,6 +988,59 @@ EOF
   pass ".omp watch extension: under Paseo a wake is a hidden message that waits for main to go idle, batching wakes parked in one run"
 }
 
+# A task sub-agent runs in the primary's process and cwd, so it binds this same
+# module. Its start and end must leave the primary's monitoring untouched, and a
+# retired generation in the lock-owning session must be repairable in place.
+test_watch_extension_survives_subagent_session() {
+  local repo home out status
+  repo="$TMP_ROOT/watch-subagent/repo"; home="$TMP_ROOT/watch-subagent/home"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  printf '#!/usr/bin/env bash\nprintf "watcher: started pid=%%s (beacon 0s)\\n" "$$"\nsleep 30\n' > "$repo/bin/fm-watch-arm.sh"
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_OMP_ARM_READY_TIMEOUT_MS=3000 \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { writeFileSync } from "node:fs";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+function bind(mod) {
+  const s = { handlers: new Map(), tool: null };
+  mod.default({
+    on(e, h) { s.handlers.set(e, h); },
+    registerCommand() {},
+    registerTool(t) { s.tool = t; },
+    sendUserMessage() { return undefined; },
+  });
+  return s;
+}
+const text = async (s) => (await s.tool.execute()).content[0].text;
+const mod = await import(pathToFileURL(process.env.EXT).href);
+const primary = bind(mod);
+await primary.handlers.get("session_start")({ type: "session_start" }, {});
+const armed = await text(primary);
+if (!/^watcher: unchanged - omp extension already owns an arm child/.test(armed)) throw new Error(`primary start did not arm: ${armed}`);
+// A task sub-agent binds the same module, starts, and ends.
+const sub = bind(mod);
+await sub.handlers.get("session_start")({ type: "session_start" }, {});
+const subArm = await text(sub);
+if (!subArm.startsWith("watcher: not armed - this omp session is a sub-agent")) throw new Error(`sub-agent claimed monitoring: ${subArm}`);
+await sub.handlers.get("session_shutdown")({}, {});
+const after = await text(primary);
+if (!/^watcher: unchanged - omp extension already owns an arm child/.test(after)) throw new Error(`primary lost monitoring after a sub-agent: ${after}`);
+// A retired generation in the lock-owning session repairs instead of refusing.
+await primary.handlers.get("session_shutdown")({}, {});
+const repaired = await text(primary);
+if (!/^watcher: started omp extension arm child 1;/.test(repaired)) throw new Error(`retired lock owner did not repair: ${repaired}`);
+await primary.handlers.get("session_shutdown")({}, {});
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp watch extension sub-agent isolation: $out"
+  [ -z "$out" ] || fail "omp watch sub-agent test printed output: $out"
+  pass ".omp watch extension: a task sub-agent never claims or retires monitoring, and a retired lock owner repairs"
+}
+
 # An opted-in home spawns the supervision host in the arm's place; its streamed
 # status line drives readiness and the handling handoff, and a handed-back
 # wake is delivered with every host line and the away note.
@@ -1291,6 +1344,7 @@ test_watch_extension_delivers_through_orca_chat stale
 test_watch_extension_delivers_through_orca_chat broken
 test_watch_extension_delivers_through_orca_chat terminal
 test_watch_extension_delivers_hidden_paseo_wakes
+test_watch_extension_survives_subagent_session
 test_watch_extension_runs_the_supervision_host
 test_watch_extension_runs_the_supervision_host quiet
 test_watch_extension_keeps_the_arm_without_the_file_or_with_off
